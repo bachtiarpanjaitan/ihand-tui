@@ -20,7 +20,7 @@ Setelah itu, jalankan dari mana saja:
 ihand
 ```
 
-> **Requirements:** Go 1.23+ dan Git harus terinstall. Lihat [Install Methods](#install-methods) untuk alternatif lain.
+> **No dependencies.** Download binary langsung dari GitHub Releases. Lihat [Install Methods](#install-methods) untuk alternatif lain.
 
 ### Konfigurasi
 

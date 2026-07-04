@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -82,42 +83,10 @@ func selfUpdate(currentVersion string) string {
 		return fmt.Sprintf("❌ Gagal cari binary saat ini: %v", err)
 	}
 
-	// On macOS/Linux: rename old, copy new
-	// On Windows: rename old (can't delete running exe), copy new
-	backup := currentPath + ".old"
-	os.Remove(backup)
-	if err := os.Rename(currentPath, backup); err != nil {
-		return fmt.Sprintf("❌ Gagal backup binary lama: %v", err)
+	if runtime.GOOS == "windows" {
+		return replaceOnWindows(currentPath, newBinary, latest)
 	}
-
-	// Copy new binary
-	src, err := os.Open(newBinary)
-	if err != nil {
-		os.Rename(backup, currentPath) // rollback
-		return fmt.Sprintf("❌ Gagal buka binary baru: %v", err)
-	}
-	defer src.Close()
-
-	dst, err := os.OpenFile(currentPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
-	if err != nil {
-		os.Rename(backup, currentPath) // rollback
-		src.Close()
-		return fmt.Sprintf("❌ Gagal tulis binary baru: %v", err)
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		os.Rename(backup, currentPath) // rollback
-		return fmt.Sprintf("❌ Gagal copy binary: %v", err)
-	}
-	dst.Close()
-	src.Close()
-
-	// Cleanup backup
-	os.Remove(backup)
-
-	return fmt.Sprintf("✅ Diupdate ke v%s!\n\n⚠ Silakan restart ihand untuk menggunakan versi baru.", latest)
+	return replaceOnUnix(currentPath, newBinary, latest)
 }
 
 // ---------------------------------------------------------------------------
@@ -297,4 +266,123 @@ func extractZip(zipPath, dst string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("binary not found in zip")
+}
+
+// replaceOnUnix tries in-place replace. If permission denied, tries sudo automatically.
+func replaceOnUnix(currentPath, newPath, latest string) string {
+	if err := atomicReplace(currentPath, newPath); err == nil {
+		return fmt.Sprintf("✅ Diupdate ke v%s!\n\n⚠ Silakan restart ihand untuk menggunakan versi baru.", latest)
+	}
+
+	// Permission denied — try sudo mv
+	savedPath := currentPath + ".new"
+	if err := copyFile(newPath, savedPath); err != nil {
+		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
+	}
+
+	// Run sudo mv — the terminal will prompt for password
+	cmd := exec.Command("sudo", "mv", savedPath, currentPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err == nil {
+		return fmt.Sprintf("✅ Diupdate ke v%s!\n\n⚠ Silakan restart ihand untuk menggunakan versi baru.", latest)
+	}
+
+	// sudo failed — show manual command as last resort
+	return fmt.Sprintf(
+		"✅ Binary v%s sudah didownload.\n\n"+
+			"Update gagal otomatis. Jalankan manual:\n\n"+
+			"  sudo mv %s %s\n\n"+
+			"Lalu restart ihand.",
+		latest, savedPath, currentPath,
+	)
+}
+
+// replaceOnWindows saves the new binary, creates a batch script to swap it,
+// and instructs the user to run it. (Running .exe can't be replaced while active.)
+func replaceOnWindows(currentPath, newPath, latest string) string {
+	dir := filepath.Dir(currentPath)
+	newSaved := currentPath + ".new"
+
+	// Save new binary
+	if err := copyFile(newPath, newSaved); err != nil {
+		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
+	}
+
+	// Create batch script to finish the update
+	batPath := filepath.Join(dir, "ihand-update.bat")
+	bat := fmt.Sprintf(
+		"@echo off\r\n"+
+			"echo Updating ihand to v%s...\r\n"+
+			"timeout /t 1 /nobreak >nul\r\n"+
+			"move /Y \"%s\" \"%s\" 2>nul\r\n"+
+			"move /Y \"%s\" \"%s\" 2>nul\r\n"+
+			"del \"%%~f0\" 2>nul\r\n"+
+			"echo Done! Run: ihand\r\n",
+		latest,
+		newSaved, currentPath, // move new → current
+		filepath.Join(dir, "ihand.exe"), "",
+	)
+
+	// Fix: properly quote paths
+	bat = fmt.Sprintf(
+		"@echo off\r\n"+
+			"echo Updating ihand to v%s...\r\n"+
+			">nul 2>&1 timeout /t 1\r\n"+
+			"move /Y \"%s\" \"%s\"\r\n"+
+			"del \"%%~f0\"\r\n"+
+			"echo Done!\r\n",
+		latest,
+		newSaved, currentPath,
+	)
+
+	if err := os.WriteFile(batPath, []byte(bat), 0644); err != nil {
+		return fmt.Sprintf("❌ Gagal buat update script: %v", err)
+	}
+
+	return fmt.Sprintf(
+		"✅ Binary v%s sudah didownload.\n\n"+
+			"Update script dibuat di:\n  %s\n\n"+
+			"Jalankan script tersebut untuk menyelesaikan update,\n"+
+			"atau tutup ihand dan jalankan:\n\n"+
+			"  move /Y \"%s\" \"%s\"",
+		latest, batPath, newSaved, currentPath,
+	)
+}
+
+// atomicReplace renames old → .old, copies new → current, removes .old.
+func atomicReplace(currentPath, newPath string) error {
+	backup := currentPath + ".old"
+	os.Remove(backup)
+
+	if err := os.Rename(currentPath, backup); err != nil {
+		return err
+	}
+	if err := copyFile(newPath, currentPath); err != nil {
+		os.Rename(backup, currentPath) // rollback
+		return err
+	}
+	os.Remove(backup)
+	return nil
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(src, dst string) error {
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	d, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	if _, err := io.Copy(d, s); err != nil {
+		return err
+	}
+	return d.Close()
 }
