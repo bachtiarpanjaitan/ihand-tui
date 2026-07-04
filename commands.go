@@ -20,6 +20,7 @@ var availableCommands = []slashCommand{
 	{name: "/plan", desc: "mode analisis & rencana (read-only)"},
 	{name: "/edit", desc: "mode implementasi & edit file"},
 	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
+	{name: "/self-update", desc: "update ke versi terbaru"},
 }
 
 func computeSuggestions(input string) []string {
@@ -88,6 +89,18 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		})
 		m.textarea.Reset()
 
+		content := m.buildConversation()
+		m.viewport.SetContent(content)
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case "/self-update":
+		result := selfUpdate(version)
+		m.messages = append(m.messages, chatMessage{
+			role:    "system",
+			content: result,
+		})
+		m.textarea.Reset()
 		content := m.buildConversation()
 		m.viewport.SetContent(content)
 		m.viewport.GotoBottom()
