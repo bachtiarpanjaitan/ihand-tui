@@ -1,0 +1,12 @@
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "llama3.2",
+    "api_key": "",
+    "base_url": ""
+  },
+  "app": {
+    "allowed_dir": ".",
+    "session": "default"
+  }
+}

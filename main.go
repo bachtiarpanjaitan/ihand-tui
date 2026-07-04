@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"regexp"
@@ -34,6 +35,60 @@ const (
 	stateReady chatState = iota
 	stateThinking
 )
+
+type chatMode int
+
+const (
+	modeChat chatMode = iota
+	modePlan
+	modeEdit
+	modeAuto
+)
+
+func (m chatMode) String() string {
+	switch m {
+	case modeChat:
+		return "Chat"
+	case modePlan:
+		return "Plan"
+	case modeEdit:
+		return "Edit"
+	case modeAuto:
+		return "Auto"
+	default:
+		return "Chat"
+	}
+}
+
+func (m chatMode) Color() string {
+	switch m {
+	case modeChat:
+		return "39"  // blue
+	case modePlan:
+		return "214" // amber
+	case modeEdit:
+		return "76"  // green
+	case modeAuto:
+		return "196" // red
+	default:
+		return "39"
+	}
+}
+
+func (m chatMode) Placeholder() string {
+	switch m {
+	case modeChat:
+		return "Ketik pesan..."
+	case modePlan:
+		return "Apa yang ingin direncanakan?..."
+	case modeEdit:
+		return "Apa yang ingin diubah?..."
+	case modeAuto:
+		return "Apa yang ingin dikerjakan?..."
+	default:
+		return "Ketik pesan..."
+	}
+}
 
 // chatMessage holds a single message in the conversation.
 type chatMessage struct {
@@ -89,6 +144,10 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
+	headerBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("234")).
+			Bold(true)
+
 	separatorStyle = lipgloss.NewStyle().
 			Foreground(borderColor)
 
@@ -121,6 +180,10 @@ var availableCommands = []slashCommand{
 	{name: "/clear", desc: "reset percakapan"},
 	{name: "/stats", desc: "statistik session"},
 	{name: "/help", desc: "tampilkan bantuan"},
+	{name: "/chat", desc: "mode percakapan normal"},
+	{name: "/plan", desc: "mode analisis & rencana (read-only)"},
+	{name: "/edit", desc: "mode implementasi & edit file"},
+	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
 }
 
 type slashCommand struct {
@@ -158,6 +221,7 @@ type model struct {
 	totalTokens int
 	session     string
 	modelName   string
+	provider    string
 
 	// LLM
 	ai     *ihandai.Client
@@ -170,6 +234,7 @@ type model struct {
 
 	// State
 	state       chatState
+	mode        chatMode
 	err         error
 	suggestions []string
 	selSugg     int // selected suggestion index, -1 = none
@@ -180,13 +245,13 @@ type model struct {
 }
 
 // initialModel creates the starting Bubble Tea model.
-func initialModel(ai *ihandai.Client, store memory.ConversationStore, modelName, session, allowedDir string) model {
+func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir string) model {
 	// --- Textarea ---
 	ta := textarea.New()
 	ta.Placeholder = "Ketik pesan..."
-	ta.SetHeight(1)
+	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
-	ta.CharLimit = 4096
+	ta.CharLimit = 8192
 
 	// Styles via SetStyles (v2 API)
 	s := ta.Styles()
@@ -213,37 +278,49 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, modelName,
 
 	// --- Viewport ---
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
-	vp.SetContent(welcomeMessage())
+	vp.SetContent(welcomeMessage(provider, modelName))
 	vp.GotoTop()
 
 	return model{
 		viewport:   vp,
 		textarea:   ta,
 		session:    session,
+		provider:   provider,
 		modelName:  modelName,
 		ai:         ai,
 		ctx:        context.Background(),
 		memory:     store,
 		state:      stateReady,
+		mode:       modeChat,
 		allowedDir: allowedDir,
 		toolList:   toolList,
 		selSugg:    -1,
 	}
 }
 
-func welcomeMessage() string {
+func welcomeMessage(provider, modelName string) string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle().Render("╭────────────────────────────────────────────╮"))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render("│        Selamat datang di Ihand TUI         │"))
+	sb.WriteString(titleStyle().Render(fmt.Sprintf("│        Selamat datang di Ihand TUI        │")))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render("│       Ihand TUI dengan Ollama/llama3.2     │"))
+	sb.WriteString(titleStyle().Render(fmt.Sprintf("│       %s / %s       │", provider, modelName)))
 	sb.WriteString("\n")
 	sb.WriteString(titleStyle().Render("╰────────────────────────────────────────────╯"))
 	sb.WriteString("\n\n")
-	sb.WriteString(dimStyle.Render("Perintah tersedia:"))
+	sb.WriteString(dimStyle.Render("Mode:"))
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("  /exit   — keluar dari aplikasi"))
+	sb.WriteString(dimStyle.Render("  /chat  — percakapan normal"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /plan  — analisis & rencana (read-only)"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /edit  — implementasi & edit file"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /auto  — otonom (multi-step otomatis)"))
+	sb.WriteString("\n\n")
+	sb.WriteString(dimStyle.Render("Lainnya:"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /exit   — keluar"))
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  /clear  — reset percakapan"))
 	sb.WriteString("\n")
@@ -253,9 +330,7 @@ func welcomeMessage() string {
 	sb.WriteString("\n\n")
 	sb.WriteString(dimStyle.Render("Tools: write_file, read_file, list_files"))
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("Contoh: \"tulis file halo.txt isinya Hello World\""))
-	sb.WriteString("\n\n")
-	sb.WriteString(dimStyle.Render("Ctrl+C untuk keluar  ·  Enter untuk kirim"))
+	sb.WriteString(dimStyle.Render("Enter untuk kirim  ·  Ctrl+J untuk baris baru  ·  Ctrl+C untuk keluar"))
 	return sb.String()
 }
 
@@ -440,12 +515,11 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		// Don't send while thinking
+		// Enter = kirim pesan
 		if m.state == stateThinking {
 			return m, nil
 		}
 
-		// Clear suggestions on send
 		m.suggestions = nil
 		m.selSugg = -1
 
@@ -468,15 +542,24 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		})
 		m.state = stateThinking
 		m.textarea.Reset()
-		m.textarea.Blur() // prevent typing while thinking
+		m.textarea.Blur()
 
 		content := m.buildConversation()
 		m.viewport.SetContent(content)
 		m.viewport.GotoBottom()
 
 		return m, tea.Batch(
-			makeToolChatCall(m.ai, m.ctx, m.session, input, m.memory, m.toolList),
+			makeToolChatCall(m.ai, m.ctx, m.session, input, m.memory, m.toolList, m.mode),
 		)
+
+	case "ctrl+j":
+		// Ctrl+J = baris baru (multiline), forward ke textarea
+		if m.state == stateThinking {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
 
 	case "up", "down", "pgup", "pgdown", "home", "end":
 		// Scroll viewport with navigation keys
@@ -486,6 +569,20 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
+
+	case "shift+tab":
+		// Cycle through modes: Chat → Plan → Edit → Auto → Chat
+		switch m.mode {
+		case modeChat:
+			return m.switchMode(modePlan)
+		case modePlan:
+			return m.switchMode(modeEdit)
+		case modeEdit:
+			return m.switchMode(modeAuto)
+		case modeAuto:
+			return m.switchMode(modeChat)
+		}
+		return m, nil
 
 	case "tab":
 		// Cycle through suggestions if they're visible
@@ -530,6 +627,18 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "/exit":
 		return m, tea.Quit
 
+	case "/chat":
+		return m.switchMode(modeChat)
+
+	case "/plan":
+		return m.switchMode(modePlan)
+
+	case "/edit":
+		return m.switchMode(modeEdit)
+
+	case "/auto":
+		return m.switchMode(modeAuto)
+
 	case "/clear":
 		m.memory.Clear(m.ctx, m.session)
 		m.messages = nil
@@ -566,8 +675,9 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/help":
-		helpText := "Perintah: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan)\n" +
-			"Keys: Ctrl+C (keluar), Enter (kirim), ↑↓ (scroll), Ctrl+L (scroll ke atas)"
+		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom)\n" +
+			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan)\n" +
+			"Keys: Enter (kirim), Ctrl+J (baris baru), ↑↓ (scroll), Shift+Tab (ganti mode), Ctrl+L (scroll ke atas)"
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
 			content: helpText,
@@ -593,28 +703,61 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	}
 }
 
+// switchMode mengganti mode operasi AI.
+func (m model) switchMode(newMode chatMode) (tea.Model, tea.Cmd) {
+	if m.mode == newMode {
+		return m, nil
+	}
+	m.mode = newMode
+	m.textarea.Placeholder = newMode.Placeholder()
+
+	msg := fmt.Sprintf("🎯 Mode: %s", newMode.String())
+	m.messages = append(m.messages, chatMessage{
+		role:    "system",
+		content: msg,
+	})
+	m.textarea.Reset()
+
+	content := m.buildConversation()
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
 func (m *model) renderFull() string {
-	// --- Header ---
-	headerLeft := headerStyle.Render(fmt.Sprintf("ihandai Chat · %s", m.modelName))
+	// --- Header (fixed, full-width dengan background) ---
+	modeTag := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.mode.Color())).
+		Bold(true).
+		Padding(0, 1).
+		Render(m.mode.String())
+	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI · %s/%s", m.provider, m.modelName))
+	headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, headerLeft)
 	sessionInfo := dimStyle.Render(fmt.Sprintf("Session: %s", m.session))
 	headerGap := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(sessionInfo) - 2
 	if headerGap < 1 {
 		headerGap = 1
 	}
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
+	headerContent := lipgloss.JoinHorizontal(lipgloss.Top,
 		headerLeft,
 		strings.Repeat(" ", headerGap),
 		sessionInfo,
 	)
+	// Full-width header bar dengan background
+	padRight := m.width - lipgloss.Width(headerContent)
+	if padRight < 0 {
+		padRight = 0
+	}
+	header := headerBarStyle.Render(headerContent + strings.Repeat(" ", padRight))
 
-	// --- Separator ---
-	sep := separatorStyle.Render(strings.Repeat("─", m.width))
+	// --- Double separator (pemisah tegas) ---
+	sep := separatorStyle.Render(strings.Repeat("━", m.width))
 
-	// --- Viewport ---
+	// --- Viewport (scrollable) ---
 	vp := m.viewport.View()
 
 	// --- Status bar ---
@@ -665,7 +808,7 @@ func (m *model) renderFull() string {
 // buildConversation renders all messages into a single string for the viewport.
 func (m *model) buildConversation() string {
 	if len(m.messages) == 0 {
-		return welcomeMessage()
+		return welcomeMessage(m.provider, m.modelName)
 	}
 
 	vpWidth := m.viewport.Width()
@@ -731,11 +874,17 @@ func (m *model) renderMarkdown(text string, width int) string {
 	if m.mdWidth != wrapWidth || m.mdRenderer == nil {
 		m.mdWidth = wrapWidth
 		r, err := glamour.NewTermRenderer(
-			glamour.WithEnvironmentConfig(),
+			glamour.WithStandardStyle("dark"),
 			glamour.WithWordWrap(wrapWidth),
 		)
 		if err != nil {
-			return text
+			// Fallback: coba tanpa style
+			r, err = glamour.NewTermRenderer(
+				glamour.WithWordWrap(wrapWidth),
+			)
+			if err != nil {
+				return text
+			}
 		}
 		m.mdRenderer = r
 	}
@@ -791,7 +940,7 @@ func (m *model) recalcLayout() {
 	//   input   : 3 (textarea)
 	//   Total overhead = 6
 
-	const overhead = 6
+	const overhead = 8
 	vpHeight := m.height - overhead
 	if vpHeight < 5 {
 		vpHeight = 5
@@ -819,7 +968,7 @@ func (m *model) recalcLayout() {
 // makeToolChatCall runs a tool-enabled conversation loop.
 // It sends the user's message with tool descriptions, parses the response
 // for tool calls (ReAct format), executes tools, and loops until a final answer.
-func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool) tea.Cmd {
+func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode) tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
 
@@ -832,8 +981,19 @@ func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input st
 		// Load conversation history from memory
 		history, _ := store.History(ctx, session)
 
-		// Build system prompt with tool descriptions
-		systemPrompt := buildToolSystemPrompt(toolList)
+		// Filter tools for plan mode (read-only)
+		activeTools := toolList
+		if mode == modePlan {
+			activeTools = nil
+			for _, t := range toolList {
+				if t.Name() == "read_file" || t.Name() == "list_files" {
+					activeTools = append(activeTools, t)
+				}
+			}
+		}
+
+		// Build mode-specific system prompt
+		systemPrompt := buildToolSystemPrompt(activeTools, mode)
 
 		// Build message list: system prompt + history + current query
 		messages := []core.Message{
@@ -842,8 +1002,11 @@ func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input st
 		messages = append(messages, history...)
 		messages = append(messages, core.Message{Role: "user", Content: input})
 
-		// Tool execution loop (max 8 iterations)
-		const maxIterations = 8
+		// Tool execution loop — more iterations for auto mode
+		maxIterations := 8
+		if mode == modeAuto {
+			maxIterations = 16
+		}
 		var finalContent string
 		var toolCalls []toolCallRecord
 		totalTokens := countTokens(input)
@@ -876,7 +1039,7 @@ func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input st
 
 			if toolCall.name != "" {
 				// Execute the tool
-				toolOutput := executeToolCall(toolList, toolCall)
+				toolOutput := executeToolCall(activeTools, toolCall)
 				isToolError := strings.HasPrefix(toolOutput, "Error")
 
 				// Record tool call for TUI display
@@ -895,19 +1058,28 @@ func makeToolChatCall(ai *ihandai.Client, ctx context.Context, session, input st
 					)},
 				)
 			} else {
-				// No tool call and no final answer — prompt LLM to try again
-				messages = append(messages,
-					core.Message{Role: "assistant", Content: resp.Content},
-					core.Message{Role: "user", Content: "Kamu harus menggunakan tool yang tersedia (write_file, read_file, list_files) untuk menyelesaikan tugas, atau berikan jawaban final. Gunakan format: Action: tool_name({\"key\": \"value\"}) atau Final Answer: jawabanmu."},
-				)
+				// No tool call detected — treat the whole response as the answer
+				// (model mungkin merespon langsung tanpa format ReAct)
+				finalContent = resp.Content
+				store.Append(ctx, session, core.Message{
+					Role: "assistant", Content: resp.Content,
+				})
+				break
 			}
 		}
 
-		// If no final answer after max iterations, use last response
-		if finalContent == "" && len(messages) > 0 {
-			// Extract content from last assistant message
-			finalContent = "Agent mencapai batas maksimum iterasi. Berikut respons terakhir."
+	// If no final answer after max iterations, extract last assistant response
+	if finalContent == "" && len(messages) > 0 {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "assistant" {
+				finalContent = messages[i].Content
+				break
+			}
 		}
+		if finalContent == "" {
+			finalContent = "⚠ Agent mencapai batas maksimum iterasi tanpa respons."
+		}
+	}
 
 		elapsed := time.Since(start)
 		return llmResponseMsg{
@@ -1014,23 +1186,63 @@ func executeToolCall(toolList []tools.Tool, call reActTool) string {
 }
 
 // buildToolSystemPrompt creates the ReAct-style system prompt with tool descriptions.
-func buildToolSystemPrompt(toolList []tools.Tool) string {
-	if len(toolList) == 0 {
-		return "Kamu adalah AI asisten yang membantu menjawab pertanyaan. Tidak ada tools yang tersedia."
+func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode) string {
+	var b strings.Builder
+
+	// Mode-specific preamble
+	switch mode {
+	case modePlan:
+		b.WriteString("Kamu adalah AI asisten dalam MODE PERENCANAAN. ")
+		b.WriteString("Tugasmu adalah menganalisis, membaca file yang relevan, ")
+		b.WriteString("dan membuat rencana detail SEBELUM implementasi.\n\n")
+		b.WriteString("ATURAN PENTING:\n")
+		b.WriteString("- BACA file yang relevan dengan read_file atau list_files\n")
+		b.WriteString("- ANALISIS kode yang ada\n")
+		b.WriteString("- BUAT rencana langkah-demi-langkah yang terstruktur\n")
+		b.WriteString("- JANGAN menulis atau mengubah file apapun\n")
+		b.WriteString("- Akhiri dengan Final Answer: berisi rencana yang jelas\n\n")
+
+	case modeEdit:
+		b.WriteString("Kamu adalah AI asisten dalam MODE EDIT. ")
+		b.WriteString("Tugasmu adalah mengimplementasikan perubahan secara LANGSUNG. ")
+		b.WriteString("Jangan bertanya — langsung kerjakan.\n\n")
+		b.WriteString("ATURAN PENTING:\n")
+		b.WriteString("- TULIS file dengan write_file untuk membuat/mengubah\n")
+		b.WriteString("- BACA file yang perlu diubah dengan read_file\n")
+		b.WriteString("- IMPLEMENTASIKAN perubahan yang diminta sekarang juga\n")
+		b.WriteString("- Akhiri dengan Final Answer: konfirmasi apa yang sudah diubah\n\n")
+
+	case modeAuto:
+		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM. ")
+		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user. ")
+		b.WriteString("Rencanakan sendiri langkah-langkahnya dan eksekusi berurutan.\n\n")
+		b.WriteString("ATURAN PENTING:\n")
+		b.WriteString("- Gunakan tools secara otonom dan berurutan\n")
+		b.WriteString("- Eksekusi multi-step tanpa bertanya ke user\n")
+		b.WriteString("- Laporkan progress di setiap langkah\n")
+		b.WriteString("- Jika gagal di satu langkah, coba alternatif lain\n")
+		b.WriteString("- Akhiri dengan Final Answer: ringkasan apa yang sudah dikerjakan\n\n")
+
+	default: // modeChat
+		b.WriteString("Kamu adalah AI asisten yang membantu menjawab pertanyaan ")
+		b.WriteString("dan menyelesaikan tugas.\n\n")
 	}
 
-	var b strings.Builder
-	b.WriteString("Kamu adalah AI asisten dengan akses ke tools. ")
-	b.WriteString("Kamu HARUS menggunakan format ini untuk memanggil tools:\n\n")
-	b.WriteString("Action: nama_tool({\"key\": \"value\"})\n\n")
-	b.WriteString("Atau ketika sudah selesai:\n\n")
-	b.WriteString("Final Answer: jawaban dalam Bahasa Indonesia\n\n")
-	b.WriteString("Jangan gunakan format lain untuk memanggil tools.\n\n")
-	b.WriteString("Tools yang tersedia:\n")
+	// Tool calling format
+	if len(toolList) > 0 {
+		b.WriteString("FORMAT MEMANGGIL TOOLS:\n")
+		b.WriteString("Action: nama_tool({\"key\": \"value\"})\n\n")
+		b.WriteString("FORMAT JAWABAN AKHIR:\n")
+		b.WriteString("Final Answer: jawaban dalam Bahasa Indonesia\n\n")
+		b.WriteString("Jangan gunakan format lain untuk memanggil tools.\n\n")
+		b.WriteString("Tools yang tersedia:\n")
 
-	for _, t := range toolList {
-		schema, _ := json.Marshal(t.InputSchema())
-		b.WriteString(fmt.Sprintf("- %s: %s\n  Schema: %s\n\n", t.Name(), t.Description(), string(schema)))
+		for _, t := range toolList {
+			schema, _ := json.Marshal(t.InputSchema())
+			b.WriteString(fmt.Sprintf("- %s: %s\n  Schema: %s\n\n", t.Name(), t.Description(), string(schema)))
+		}
+	} else {
+		b.WriteString("Tidak ada tools yang tersedia. Jawab langsung dengan Final Answer.\n\n")
 	}
 
 	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk Final Answer.")
@@ -1054,24 +1266,54 @@ func countTokens(text string) int {
 // ---------------------------------------------------------------------------
 
 func main() {
+	// Parse command-line flags
+	configPath := flag.String("config", "settings.json", "path ke file konfigurasi JSON")
+	flag.Parse()
+
+	// Load configuration
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Gagal membaca konfigurasi: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Menggunakan konfigurasi default.\n\n")
+		cfg = DefaultConfig()
+	}
+
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Konfigurasi tidak valid: %v\n\n", err)
+		os.Exit(1)
+	}
+
+	// Override allowed_dir from command-line argument if provided
+	allowedDir := cfg.App.AllowedDir
+	if flag.NArg() > 0 {
+		allowedDir = flag.Arg(0)
+	}
+
+	// Build LLM options
+	var llmOpts []llm.Option
+	llmOpts = append(llmOpts, llm.WithModel(cfg.LLM.Model))
+	if cfg.LLM.APIKey != "" {
+		llmOpts = append(llmOpts, llm.WithAPIKey(cfg.LLM.APIKey))
+	}
+	if cfg.LLM.BaseURL != "" {
+		llmOpts = append(llmOpts, llm.WithBaseURL(cfg.LLM.BaseURL))
+	}
+
 	store := memory.NewInMemoryStore()
 
 	ai, err := ihandai.New(
-		ihandai.WithLLM("ollama", llm.WithModel("llama3.2")),
+		ihandai.WithLLM(cfg.LLM.Provider, llmOpts...),
 		ihandai.WithMemory(store),
 	)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM provider %q: %v\n", cfg.LLM.Provider, err)
+		os.Exit(1)
 	}
 	defer ai.Close()
 
-	// Allowed directory untuk file operations (default: current directory)
-	allowedDir := "."
-	if len(os.Args) > 1 {
-		allowedDir = os.Args[1]
-	}
+	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", cfg.LLM.Provider, cfg.LLM.Model)
 
-	m := initialModel(ai, store, "ollama/llama3.2", "user", allowedDir)
+	m := initialModel(ai, store, cfg.LLM.Provider, cfg.LLM.Model, cfg.App.Session, allowedDir)
 
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
