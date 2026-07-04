@@ -13,7 +13,7 @@ DIST_DIR := dist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS  := -ldflags="-X main.version=$(VERSION)"
 
-.PHONY: build install install-remote uninstall build-all clean
+.PHONY: build install install-remote uninstall build-all clean release
 
 build:
 	@echo "🔨 Building $(BINARY)..."
@@ -36,6 +36,9 @@ install-remote:
 	@echo ""
 	@echo "To use via curl:"
 	@echo "  curl -fsSL <raw-url>/scripts/install-remote.sh | bash"
+
+release:
+	bash scripts/release.sh $(filter-out $@,$(MAKECMDGOALS)) --yes
 
 uninstall:
 	@echo "🗑 Removing /usr/local/bin/$(BINARY)..."
