@@ -57,6 +57,11 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (jso
 		return json.RawMessage(fmt.Sprintf(`{"error": "%s"}`, err.Error())), nil
 	}
 
+	// Tolak jika path adalah direktori yang sudah ada
+	if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
+		return json.RawMessage(fmt.Sprintf(`{"error": "%s adalah direktori, bukan file. Gunakan path file lengkap, contoh: %s/namafile.go"}`, params.Path, params.Path)), nil
+	}
+
 	// Buat direktori jika belum ada
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {

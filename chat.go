@@ -342,71 +342,62 @@ func extractBalancedJSON(s string) string {
 // fixJSON mencoba memperbaiki JSON yang tidak valid dengan melakukan escape
 // pada karakter khusus di dalam string value.
 func fixJSON(raw string) string {
-	// Strategi sederhana: coba parse sebagai JSON dulu,
-	// kalau gagal, coba bungkus ulang dengan asumsi path dan content adalah field utama.
-	// Ini adalah best-effort; LLM seharusnya menghasilkan JSON yang valid.
+	pathVal := extractField(raw, `"path"`)
+	contentVal := extractField(raw, `"content"`)
 
-	// Coba temukan pola {"path": "...", "content": "..."}
-	// dan rekonstruksi JSON dengan escape yang benar.
-	pathMatch := strings.Index(raw, `"path"`)
-	contentMatch := strings.Index(raw, `"content"`)
-
-	if pathMatch < 0 || contentMatch < 0 {
-		return raw // tidak bisa diperbaiki
-	}
-
-	// Rekonstruksi manual: ambil path value dan content value
-	pathVal := extractStringValue(raw, `"path"`)
-	contentVal := extractStringValue(raw, `"content"`)
-
-	if pathVal == "" && contentVal == "" {
+	if pathVal == "" {
 		return raw
 	}
 
-	// Bangun ulang JSON yang valid
+	// Bangun ulang JSON yang valid dengan json.Marshal (auto-escape)
 	escapedPath, _ := json.Marshal(pathVal)
 	escapedContent, _ := json.Marshal(contentVal)
 	return fmt.Sprintf(`{"path": %s, "content": %s}`, string(escapedPath), string(escapedContent))
 }
 
-// extractStringValue mengekstrak nilai string dari field JSON tertentu.
-func extractStringValue(raw, field string) string {
+// extractField mengekstrak nilai string dari field JSON seperti "path" atau "content".
+// Lebih robust dari extractStringValue — mencari quote penutup dengan
+// menghitung dari belakang untuk handle nested quotes dalam konten.
+func extractField(raw, field string) string {
 	idx := strings.Index(raw, field)
 	if idx < 0 {
 		return ""
 	}
 
-	// Cari ':' setelah field
+	// Cari ':' setelah field name
 	colonIdx := strings.Index(raw[idx:], ":")
 	if colonIdx < 0 {
 		return ""
 	}
-	afterColon := strings.TrimSpace(raw[idx+colonIdx+1:])
+	rest := raw[idx+colonIdx+1:]
 
-	if !strings.HasPrefix(afterColon, `"`) {
+	// Skip whitespace dan quote pembuka
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, `"`) {
 		return ""
 	}
+	rest = rest[1:] // lewati quote pembuka
 
-	// Ekstrak string dengan memperhatikan escape
-	var result strings.Builder
-	escaped := false
-	for i := 1; i < len(afterColon); i++ { // mulai setelah quote pembuka
-		ch := afterColon[i]
-		if escaped {
-			result.WriteByte(ch)
-			escaped = false
-			continue
-		}
-		if ch == '\\' {
-			escaped = true
-			continue
-		}
-		if ch == '"' {
-			break // quote penutup
-		}
-		result.WriteByte(ch)
+	// "content" adalah field terakhir, jadi quote penutupnya adalah
+	// quote terakhir sebelum "}" penutup JSON.
+	// Cari dari belakang: " diikuti optional whitespace lalu }
+	closingBrace := strings.LastIndex(rest, `}`)
+	if closingBrace < 0 {
+		closingBrace = len(rest)
 	}
-	return result.String()
+
+	// Cari quote terakhir sebelum closing brace
+	beforeBrace := rest[:closingBrace]
+	lastQuote := strings.LastIndex(beforeBrace, `"`)
+	if lastQuote < 0 {
+		// Fallback: cari quote pertama
+		lastQuote = strings.Index(rest, `"`)
+		if lastQuote < 0 {
+			return rest // return as-is, no closing quote found
+		}
+	}
+
+	return rest[:lastQuote]
 }
 
 // truncateStr memotong string ke panjang maksimal.
