@@ -128,11 +128,17 @@ Provider manapun yang punya endpoint `/v1/chat/completions` bisa dipakai. Tingga
 
 Ketik pertanyaan atau instruksi, lalu Enter. AI akan merespon dengan markdown (tabel, code block, list, dll akan dirender dengan baik di terminal).
 
+Setiap langkah AI ditampilkan **real-time** — tool call, file operation, dan thinking process langsung kelihatan:
+
 ```
-▸ jelaskan apa itu goroutine
-✓ [1.2s · ~150 token]
+▸ buat file server.go dengan HTTP server sederhana
+⏳ Memulai...
+🔧 read_file({"path":"server.go"}) → Error: file tidak ditemukan
+⏳ Menjalankan write_file...
+🔧 write_file({"path":"server.go","content":"package main\n\nimport..."}) → File berhasil ditulis
+✓ [2.4s · ~320 token]
 ─────────────────────────────────────────
-Goroutine adalah lightweight thread...
+File server.go berhasil dibuat! Berikut isinya...
 ─────────────────────────────────────────
 ```
 
