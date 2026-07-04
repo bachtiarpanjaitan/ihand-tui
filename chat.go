@@ -298,18 +298,131 @@ func formatToolDisplay(toolName, input, output string) string {
 // Tool execution helpers
 // ---------------------------------------------------------------------------
 
+// extractBalancedJSON mengambil JSON object dari string dengan menghitung
+// bracket {} secara seimbang. Ini menangani kasus di mana konten string
+// mengandung karakter } (seperti kode Go, JS, dll).
+func extractBalancedJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") {
+		return ""
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+
+	for i, ch := range s {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if ch == '{' {
+			depth++
+		} else if ch == '}' {
+			depth--
+			if depth == 0 {
+				return s[:i+1]
+			}
+		}
+	}
+	return "" // tidak menemukan penutup yang seimbang
+}
+
+// fixJSON mencoba memperbaiki JSON yang tidak valid dengan melakukan escape
+// pada karakter khusus di dalam string value.
+func fixJSON(raw string) string {
+	// Strategi sederhana: coba parse sebagai JSON dulu,
+	// kalau gagal, coba bungkus ulang dengan asumsi path dan content adalah field utama.
+	// Ini adalah best-effort; LLM seharusnya menghasilkan JSON yang valid.
+
+	// Coba temukan pola {"path": "...", "content": "..."}
+	// dan rekonstruksi JSON dengan escape yang benar.
+	pathMatch := strings.Index(raw, `"path"`)
+	contentMatch := strings.Index(raw, `"content"`)
+
+	if pathMatch < 0 || contentMatch < 0 {
+		return raw // tidak bisa diperbaiki
+	}
+
+	// Rekonstruksi manual: ambil path value dan content value
+	pathVal := extractStringValue(raw, `"path"`)
+	contentVal := extractStringValue(raw, `"content"`)
+
+	if pathVal == "" && contentVal == "" {
+		return raw
+	}
+
+	// Bangun ulang JSON yang valid
+	escapedPath, _ := json.Marshal(pathVal)
+	escapedContent, _ := json.Marshal(contentVal)
+	return fmt.Sprintf(`{"path": %s, "content": %s}`, string(escapedPath), string(escapedContent))
+}
+
+// extractStringValue mengekstrak nilai string dari field JSON tertentu.
+func extractStringValue(raw, field string) string {
+	idx := strings.Index(raw, field)
+	if idx < 0 {
+		return ""
+	}
+
+	// Cari ':' setelah field
+	colonIdx := strings.Index(raw[idx:], ":")
+	if colonIdx < 0 {
+		return ""
+	}
+	afterColon := strings.TrimSpace(raw[idx+colonIdx+1:])
+
+	if !strings.HasPrefix(afterColon, `"`) {
+		return ""
+	}
+
+	// Ekstrak string dengan memperhatikan escape
+	var result strings.Builder
+	escaped := false
+	for i := 1; i < len(afterColon); i++ { // mulai setelah quote pembuka
+		ch := afterColon[i]
+		if escaped {
+			result.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			break // quote penutup
+		}
+		result.WriteByte(ch)
+	}
+	return result.String()
+}
+
+// truncateStr memotong string ke panjang maksimal.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func parseReActResponse(text string) (reActTool, bool) {
 	if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
 		return reActTool{output: strings.TrimSpace(m[1])}, true
 	}
 
-	if m := toolCallRe.FindStringSubmatch(text); len(m) > 2 {
-		return reActTool{
-			name:  strings.TrimSpace(m[1]),
-			input: strings.TrimSpace(m[2]),
-		}, false
-	}
-
+	// Periksa Action: format dulu — lebih robust untuk JSON dengan nested braces
 	if m := actionRe.FindStringSubmatch(text); len(m) > 1 {
 		actionStr := strings.TrimSpace(m[1])
 
@@ -317,15 +430,25 @@ func parseReActResponse(text string) (reActTool, bool) {
 		if parenIdx > 0 {
 			name := strings.TrimSpace(actionStr[:parenIdx])
 			inputStr := actionStr[parenIdx+1:]
-			if lastParen := strings.LastIndex(inputStr, ")"); lastParen > 0 {
-				inputStr = inputStr[:lastParen]
+
+			// Gunakan bracket counting untuk handle JSON dengan nested {} di dalam string
+			jsonStr := extractBalancedJSON(inputStr)
+			if jsonStr != "" {
+				return reActTool{
+					name:  name,
+					input: strings.TrimSpace(jsonStr),
+				}, false
 			}
-			return reActTool{
-				name:  name,
-				input: strings.TrimSpace(inputStr),
-			}, false
 		}
 		return reActTool{name: actionStr, input: "{}"}, false
+	}
+
+	// Fallback: toolCallRe — hanya untuk format tanpa "Action:" prefix
+	if m := toolCallRe.FindStringSubmatch(text); len(m) > 2 {
+		return reActTool{
+			name:  strings.TrimSpace(m[1]),
+			input: strings.TrimSpace(m[2]),
+		}, false
 	}
 
 	if m := inputRe.FindStringSubmatch(text); len(m) > 1 {
@@ -349,7 +472,14 @@ func executeToolCall(toolList []tools.Tool, call reActTool) string {
 
 	input := json.RawMessage(call.input)
 	if !json.Valid(input) {
-		input = json.RawMessage(fmt.Sprintf("%q", call.input))
+		// Coba perbaiki JSON dengan melakukan escape pada konten string
+		fixed := fixJSON(call.input)
+		if json.Valid(json.RawMessage(fixed)) {
+			input = json.RawMessage(fixed)
+		} else {
+			// Kembalikan error yang jelas agar LLM bisa memperbaiki formatnya
+			return fmt.Sprintf("Error: Format JSON tidak valid untuk tool %s. Input: %s. Pastikan JSON valid — gunakan escape yang benar untuk newline dan quotes di dalam string.", call.name, truncateStr(call.input, 200))
+		}
 	}
 
 	output, err := tool.Execute(context.Background(), input)
