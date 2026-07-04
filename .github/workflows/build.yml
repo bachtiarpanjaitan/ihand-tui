@@ -63,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ihand-binaries
-          path: dist/*
+          path: dist/
           retention-days: 7
 
   # --------------------------------------------------------------------------
@@ -79,7 +79,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ihand-binaries
-          path: dist
+          path: .
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

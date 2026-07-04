@@ -13,7 +13,7 @@ DIST_DIR := dist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS  := -ldflags="-X main.version=$(VERSION)"
 
-.PHONY: build install install-remote uninstall build-all clean release
+.PHONY: build install install-remote uninstall build-all clean release unrelease
 
 build:
 	@echo "🔨 Building $(BINARY)..."
@@ -39,6 +39,14 @@ install-remote:
 
 release:
 	bash scripts/release.sh $(filter-out $@,$(MAKECMDGOALS)) --yes
+
+unrelease:
+	@echo "🗑 Removing tag $(TAG)..."
+	git tag -d $(TAG) 2>/dev/null || true
+	git push --delete origin $(TAG) 2>/dev/null || true
+	@echo "✅ Tag $(TAG) removed locally + remote."
+	@echo "⚠  Release still needs manual deletion at:"
+	@echo "   https://github.com/bachtiarpanjaitan/ihandtui/releases"
 
 uninstall:
 	@echo "🗑 Removing /usr/local/bin/$(BINARY)..."
