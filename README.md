@@ -11,7 +11,7 @@ Chat dengan AI langsung dari terminal. Full-screen TUI, rendering markdown, file
 ### Install (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install-remote.sh | bash
 ```
 
 Setelah itu, jalankan dari mana saja:
@@ -232,7 +232,7 @@ ihand ~/my-project                       # batasi ke folder tertentu
 ### curl (macOS & Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install-remote.sh | bash
 ```
 
 Skrip akan clone repo, build, dan install ke `/usr/local/bin/ihand`.
@@ -240,8 +240,8 @@ Skrip akan clone repo, build, dan install ke `/usr/local/bin/ihand`.
 ### make (dari source)
 
 ```bash
-git clone https://github.com/bachtiarpanjaitan/ihandtui.git
-cd ihandtui
+git clone https://github.com/bachtiarpanjaitan/ihand-tui.git
+cd ihand-tui
 
 make install      # build + install ke /usr/local/bin
 make build        # build saja (binary: ./ihand)
@@ -262,8 +262,8 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ### Build manual
 
 ```bash
-git clone https://github.com/bachtiarpanjaitan/ihandtui.git
-cd ihandtui
+git clone https://github.com/bachtiarpanjaitan/ihand-tui.git
+cd ihand-tui
 go build -o ihand .
 ./ihand
 ```
@@ -301,7 +301,7 @@ rm -r %USERPROFILE%\AppData\Local\ihand
 ## Project Structure
 
 ```
-ihandtui/
+ihand-tui/
 ├── main.go              # Entry point, flag parsing, init
 ├── model.go             # Data model, types, constructor
 ├── chat.go              # ReAct loop, tool parsing, display formatting

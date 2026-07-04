@@ -161,7 +161,7 @@ jobs:
             ### ⚡ Quick Install (curl)
 
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
+            curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install-remote.sh | bash
             ```
 
             ### 🔨 Manual Install

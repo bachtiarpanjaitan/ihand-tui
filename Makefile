@@ -46,7 +46,7 @@ unrelease:
 	git push --delete origin $(TAG) 2>/dev/null || true
 	@echo "✅ Tag $(TAG) removed locally + remote."
 	@echo "⚠  Release still needs manual deletion at:"
-	@echo "   https://github.com/bachtiarpanjaitan/ihandtui/releases"
+	@echo "   https://github.com/bachtiarpanjaitan/ihand-tui/releases"
 
 uninstall:
 	@echo "🗑 Removing /usr/local/bin/$(BINARY)..."

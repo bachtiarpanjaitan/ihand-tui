@@ -3,17 +3,17 @@
 # Ihand TUI — Remote Installer (via curl | bash)
 # ==============================================================================
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install-remote.sh | bash
 #
 #   Options:
 #     --yes / -y     skip prompts
-#     --branch <b>   specify git branch (default: main)
+#     --branch <b>   specify git branch (default: master)
 # ==============================================================================
 
 set -euo pipefail
 
-REPO_URL="${IHAND_REPO_URL:-https://github.com/bachtiarpanjaitan/ihandtui.git}"
-BRANCH="${IHAND_BRANCH:-main}"
+REPO_URL="${IHAND_REPO_URL:-https://github.com/bachtiarpanjaitan/ihand-tui.git}"
+BRANCH="${IHAND_BRANCH:-master}"
 BINARY="ihand"
 INSTALL_DIR="/usr/local/bin"
 GREEN="\033[32m"
@@ -26,7 +26,7 @@ AUTO_YES=false
 for arg in "$@"; do
     case $arg in
         --yes|-y) AUTO_YES=true ;;
-        --branch) BRANCH="${2:-main}"; shift ;;
+        --branch) BRANCH="${2:-master}"; shift ;;
     esac
     shift 2>/dev/null || true
 done
@@ -62,22 +62,22 @@ TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t 'ihand-install')
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo -e "  → $REPO_URL ($BRANCH)"
-git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/ihandtui" 2>&1 | sed 's/^/     /'
+git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/ihand-tui" 2>&1 | sed 's/^/     /'
 echo -e "  ✓ Done"
 
 # --- Build -------------------------------------------------------------------
 echo -e "${YELLOW}[3/5]${RESET} Building ${BINARY}..."
 
-cd "$TMP_DIR/ihandtui"
+cd "$TMP_DIR/ihand-tui"
 
 VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-if go build -ldflags="-X main.version=$VERSION" -o "$BINARY" . 2>&1 | tail -5 | sed 's/^/     /'; then
+if go build -ldflags="-X master.version=$VERSION" -o "$BINARY" . 2>&1 | tail -5 | sed 's/^/     /'; then
     echo -e "  ✓ Build successful (v${VERSION})"
 else
     echo -e "${RED}✗ Build failed${RESET}"
     echo "  Try building manually:"
-    echo "    git clone $REPO_URL && cd ihandtui && go build -o ihand ."
+    echo "    git clone $REPO_URL && cd ihand-tui && go build -o ihand ."
     exit 1
 fi
 
