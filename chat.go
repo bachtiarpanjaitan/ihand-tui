@@ -39,6 +39,9 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			return llmErrorMsg{err: fmt.Errorf("LLM provider tidak tersedia")}
 		}
 
+		// Save user message to memory for conversation context
+		store.Append(ctx, session, core.Message{Role: "user", Content: input})
+
 		history, _ := store.History(ctx, session)
 
 		activeTools := toolList
@@ -57,7 +60,6 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			{Role: "system", Content: systemPrompt},
 		}
 		messages = append(messages, history...)
-		messages = append(messages, core.Message{Role: "user", Content: input})
 
 		resp, err := llmProvider.Chat(ctx, messages)
 
@@ -144,18 +146,15 @@ return m.textarea.Focus(), true
 		toolOutput := executeToolCall(state.activeTools, toolCall)
 		isToolError := strings.HasPrefix(toolOutput, "Error")
 
-		// Show tool call immediately in UI
-		display := toolOutput
-		if len(display) > 500 {
-			display = display[:500] + "..."
-		}
+		// Show tool call immediately in UI with friendly formatting
+		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 		role := "tool"
 		if isToolError {
 			role = "tool-error"
 		}
 		m.messages = append(m.messages, chatMessage{
 			role:    role,
-			content: fmt.Sprintf("%s(%s) → %s", toolCall.name, toolCall.input, display),
+			content: display,
 			tokens:  0,
 		})
 
@@ -230,6 +229,69 @@ func (m *model) rebuildViewport() {
 	content := m.buildConversation()
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
+}
+
+// ---------------------------------------------------------------------------
+// Tool display formatting
+// ---------------------------------------------------------------------------
+
+// formatToolDisplay returns a user-friendly display string for a tool call result.
+// For read_file: shows only the file path and size, not the full content.
+// For other tools: shows a clean summary or truncated raw output as fallback.
+func formatToolDisplay(toolName, input, output string) string {
+	// Try to parse as JSON for clean display
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		// Not JSON — show truncated raw output
+		display := output
+		if len(display) > 300 {
+			display = display[:300] + "..."
+		}
+		return fmt.Sprintf("%s(%s) → %s", toolName, input, display)
+	}
+
+	switch toolName {
+	case "read_file":
+		path, _ := parsed["path"].(string)
+		size := 0
+		if s, ok := parsed["size"].(float64); ok {
+			size = int(s)
+		}
+		if errMsg, ok := parsed["error"].(string); ok {
+			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
+		}
+		return fmt.Sprintf("%s(%s) → ✓ Dibaca: %s (%d bytes)", toolName, input, path, size)
+
+	case "write_file":
+		path, _ := parsed["path"].(string)
+		if errMsg, ok := parsed["error"].(string); ok {
+			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
+		}
+		msg, _ := parsed["message"].(string)
+		if msg == "" {
+			msg = fmt.Sprintf("File berhasil ditulis: %s", path)
+		}
+		return fmt.Sprintf("%s(%s) → ✓ %s", toolName, input, msg)
+
+	case "list_files":
+		path, _ := parsed["path"].(string)
+		count := 0
+		if c, ok := parsed["count"].(float64); ok {
+			count = int(c)
+		}
+		if errMsg, ok := parsed["error"].(string); ok {
+			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
+		}
+		return fmt.Sprintf("%s(%s) → ✓ %d file/direktori di %s", toolName, input, count, path)
+
+	default:
+		// Unknown tool — show truncated raw output
+		display := output
+		if len(display) > 300 {
+			display = display[:300] + "..."
+		}
+		return fmt.Sprintf("%s(%s) → %s", toolName, input, display)
+	}
 }
 
 // ---------------------------------------------------------------------------

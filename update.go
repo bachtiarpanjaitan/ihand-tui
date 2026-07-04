@@ -92,6 +92,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.suggestions = nil
+		m.suggestionType = ""
 		m.selSugg = -1
 
 		input := strings.TrimSpace(m.textarea.Value())
@@ -132,6 +133,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "up", "down", "pgup", "pgdown", "home", "end":
 		m.suggestions = nil
+		m.suggestionType = ""
 		m.selSugg = -1
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -153,7 +155,21 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		if len(m.suggestions) > 0 {
 			m.selSugg = (m.selSugg + 1) % len(m.suggestions)
-			m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
+			if m.suggestionType == "file" {
+				// Replace only the @query part, preserving text before and after
+				currentValue := m.textarea.Value()
+				before := currentValue[:m.fileQueryStart]
+				// Find the end of the @query (space, newline, or end of string)
+				afterAt := currentValue[m.fileQueryStart+1:]
+				spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
+				var after string
+				if spaceIdx >= 0 {
+					after = afterAt[spaceIdx:]
+				}
+				m.textarea.SetValue(before + "@" + m.suggestions[m.selSugg] + after)
+			} else {
+				m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
+			}
 			m.textarea.CursorEnd()
 			return m, nil
 		}
@@ -166,11 +182,21 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
 
-		m.suggestions = computeSuggestions(m.textarea.Value())
-		if len(m.suggestions) > 0 {
+		// Check for @file mentions first, then fall back to slash commands
+		fileSugs, atPos := computeFileSuggestions(m.textarea.Value(), m.allowedDir)
+		if len(fileSugs) > 0 {
+			m.suggestions = fileSugs
+			m.suggestionType = "file"
+			m.fileQueryStart = atPos
 			m.selSugg = 0
 		} else {
-			m.selSugg = -1
+			m.suggestions = computeSuggestions(m.textarea.Value())
+			m.suggestionType = "command"
+			if len(m.suggestions) > 0 {
+				m.selSugg = 0
+			} else {
+				m.selSugg = -1
+			}
 		}
 
 		return m, cmd

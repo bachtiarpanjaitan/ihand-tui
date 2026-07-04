@@ -1,8 +1,122 @@
 package main
 
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
 func countTokens(text string) int {
 	if len(text) == 0 {
 		return 0
 	}
 	return len(text) / 4
+}
+
+// computeFileSuggestions finds files/folders matching the last @mention in the input.
+// Returns matching relative paths and the position of '@' in the input string.
+// Returns (nil, -1) if no '@' is found or no files match.
+func computeFileSuggestions(input string, allowedDir string) ([]string, int) {
+	// Find the last '@' in the input
+	atIdx := strings.LastIndex(input, "@")
+	if atIdx < 0 {
+		return nil, -1
+	}
+
+	// Extract query after '@' until space, newline, or end of string
+	afterAt := input[atIdx+1:]
+	spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
+	query := afterAt
+	if spaceIdx >= 0 {
+		query = afterAt[:spaceIdx]
+	}
+
+	// If query is empty, match all files (show everything)
+	// Walk directory and collect matches
+	var matches []string
+	maxDepth := 4
+	maxResults := 20
+	skipDirs := map[string]bool{".git": true, "node_modules": true, ".claude": true, "vendor": true}
+
+	absAllowed, err := filepath.Abs(allowedDir)
+	if err != nil {
+		return nil, -1
+	}
+
+	filepath.WalkDir(absAllowed, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip errors
+		}
+
+		// Skip ignored directories
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			// Limit depth
+			rel, _ := filepath.Rel(absAllowed, path)
+			if rel != "." && strings.Count(rel, string(filepath.Separator)) >= maxDepth {
+				return filepath.SkipDir
+			}
+		}
+
+		// Skip hidden files (except current dir)
+		if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Skip binary/large files
+		if !d.IsDir() {
+			info, _ := d.Info()
+			if info != nil && info.Size() > 1_000_000 {
+				return nil
+			}
+		}
+
+		// Get relative path
+		rel, _ := filepath.Rel(absAllowed, path)
+		if rel == "." {
+			return nil // skip root itself
+		}
+
+		// Match query against path (case-insensitive)
+		queryLower := strings.ToLower(query)
+		relLower := strings.ToLower(rel)
+
+		if query == "" || strings.Contains(relLower, queryLower) {
+			// Add trailing slash for directories
+			if d.IsDir() {
+				rel += "/"
+			}
+			matches = append(matches, rel)
+		}
+
+		return nil
+	})
+
+	if len(matches) == 0 {
+		return nil, -1
+	}
+
+	// Sort: prefix matches first, then alphabetically
+	sort.Slice(matches, func(i, j int) bool {
+		qi := strings.ToLower(query)
+		iPrefix := strings.HasPrefix(strings.ToLower(matches[i]), qi)
+		jPrefix := strings.HasPrefix(strings.ToLower(matches[j]), qi)
+		if iPrefix != jPrefix {
+			return iPrefix // prefix matches come first
+		}
+		return matches[i] < matches[j]
+	})
+
+	// Limit results
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	return matches, atIdx
 }

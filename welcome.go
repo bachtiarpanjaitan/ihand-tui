@@ -9,9 +9,9 @@ func welcomeMessage(provider, modelName string) string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle().Render("╭────────────────────────────────────────────╮"))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render(fmt.Sprintf("│        Selamat datang di Ihand TUI        │")))
+	sb.WriteString(titleStyle().Render(fmt.Sprintf("        Selamat datang di Ihand TUI        ")))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render(fmt.Sprintf("│       %s / %s       │", provider, modelName)))
+	sb.WriteString(titleStyle().Render(fmt.Sprintf("       %s / %s       ", provider, modelName)))
 	sb.WriteString("\n")
 	sb.WriteString(titleStyle().Render("╰────────────────────────────────────────────╯"))
 	sb.WriteString("\n\n")

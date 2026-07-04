@@ -168,8 +168,10 @@ type model struct {
 	mode        chatMode
 	statusMsg   string
 	err         error
-	suggestions []string
-	selSugg     int
+	suggestions     []string
+	suggestionType  string // "command" atau "file"
+	fileQueryStart  int    // posisi karakter '@' di input untuk replace
+	selSugg         int
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
