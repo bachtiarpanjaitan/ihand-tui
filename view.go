@@ -36,7 +36,7 @@ func (m *model) renderFull() string {
 		Bold(true).
 		Padding(0, 1).
 		Render(m.mode.String())
-	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI · %s/%s", m.provider, m.modelName))
+	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI v%s · %s/%s", version, m.provider, m.modelName))
 	headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, headerLeft)
 	sessionInfo := dimStyle.Render(fmt.Sprintf("Session: %s", m.session))
 	headerGap := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(sessionInfo) - 2
