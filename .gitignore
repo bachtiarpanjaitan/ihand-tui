@@ -1,4 +1,6 @@
 .claude/
 .DS_Store
 ihand-tui
+ihand
+dist/
 settings.json

@@ -2,14 +2,12 @@ module test-ihandai
 
 go 1.26.1
 
-replace github.com/bachtiarpanjaitan/ihandai-go => /Users/bachtiarpanjaitan/Projects/personal/ihandai
-
 require (
 	charm.land/bubbles/v2 v2.1.1
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
-	github.com/bachtiarpanjaitan/ihandai-go v0.0.0-00010101000000-000000000000
+	github.com/bachtiarpanjaitan/ihandai-go v1.0.2-0.20260704160300-6d7e01c9304c
 )
 
 require (

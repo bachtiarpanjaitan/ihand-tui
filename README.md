@@ -1,6 +1,6 @@
 # Ihand TUI — AI Chat in Your Terminal
 
-Chat dengan AI langsung dari terminal. Tampilan full-screen, dukungan markdown, file operations, dan bisa pakai **OpenAI**, **Anthropic**, **Ollama**, atau provider OpenAI-compatible lainnya (Groq, Together AI, DeepSeek, dll).
+Chat dengan AI langsung dari terminal. Full-screen TUI, rendering markdown, file operations, dan dukungan **OpenAI**, **Anthropic**, **Ollama**, atau provider OpenAI-compatible lainnya (Groq, Together AI, DeepSeek, dll).
 
 ![Go](https://img.shields.io/badge/go-1.23+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -8,17 +8,23 @@ Chat dengan AI langsung dari terminal. Tampilan full-screen, dukungan markdown, 
 
 ## Quick Start
 
-### 1. Install
+### Install (curl)
 
 ```bash
-git clone https://github.com/bachtiarpanjaitan/ihand-tui.git
-cd ihand-tui
-go build -o ihand-tui .
+curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
 ```
 
-### 2. Konfigurasi
+Setelah itu, jalankan dari mana saja:
 
-Edit `settings.json`, sesuaikan dengan provider yang dipakai:
+```bash
+ihand
+```
+
+> **Requirements:** Go 1.23+ dan Git harus terinstall. Lihat [Install Methods](#install-methods) untuk alternatif lain.
+
+### Konfigurasi
+
+Buat file `settings.json` di direktori tempat kamu menjalankan `ihand`, atau arahkan dengan flag `--config`:
 
 ```json
 {
@@ -27,17 +33,24 @@ Edit `settings.json`, sesuaikan dengan provider yang dipakai:
     "model": "gpt-4o",
     "api_key": "sk-proj-...",
     "base_url": ""
+  },
+  "app": {
+    "allowed_dir": ".",
+    "session": "default"
   }
 }
 ```
 
-### 3. Jalankan
-
 ```bash
-./ihand-tui
-```
+# Jalankan
+ihand
 
-Selesai. Mulai ketik pertanyaan, Enter untuk kirim.
+# Atau dengan config custom
+ihand --config ~/.config/ihand.json
+
+# Batasi file operations ke folder tertentu
+ihand ~/projects
+```
 
 ---
 
@@ -69,8 +82,6 @@ Selesai. Mulai ketik pertanyaan, Enter untuk kirim.
 
 ### Ollama (local, gratis)
 
-Pastikan Ollama sudah terinstall dan model sudah di-pull:
-
 ```bash
 ollama pull llama3.2
 ```
@@ -86,9 +97,19 @@ ollama pull llama3.2
 
 ### OpenAI-compatible (Groq, Together AI, DeepSeek, dll)
 
-Provider manapun yang punya endpoint `/v1/chat/completions` bisa dipakai. Tinggal isi `base_url`:
+Provider manapun dengan endpoint `/v1/chat/completions`:
 
 ```json
+// DeepSeek via Anthropic endpoint
+{
+  "llm": {
+    "provider": "anthropic",
+    "model": "deepseek-v4-pro",
+    "api_key": "sk-...",
+    "base_url": "https://api.deepseek.com/anthropic"
+  }
+}
+
 // Groq
 {
   "llm": {
@@ -98,129 +119,213 @@ Provider manapun yang punya endpoint `/v1/chat/completions` bisa dipakai. Tingga
     "base_url": "https://api.groq.com/openai/v1"
   }
 }
-
-// Together AI
-{
-  "llm": {
-    "provider": "openai",
-    "model": "meta-llama/Llama-3.1-70B-Instruct",
-    "api_key": "tgp_...",
-    "base_url": "https://api.together.xyz/v1"
-  }
-}
-
-// DeepSeek
-{
-  "llm": {
-    "provider": "openai",
-    "model": "deepseek-chat",
-    "api_key": "sk-...",
-    "base_url": "https://api.deepseek.com/v1"
-  }
-}
 ```
 
 ---
 
-## Penggunaan
+## Fitur
 
-### Chat
+### 1. Empat Mode Operasi
 
-Ketik pertanyaan atau instruksi, lalu Enter. AI akan merespon dengan markdown (tabel, code block, list, dll akan dirender dengan baik di terminal).
+Ganti mode kapan saja dengan `Shift+Tab` atau slash command:
 
-Setiap langkah AI ditampilkan **real-time** — tool call, file operation, dan thinking process langsung kelihatan:
+| Mode | Command | Perilaku | Tools |
+|------|---------|----------|-------|
+| 💬 **Chat** | `/chat` | Percakapan normal, bisa pakai semua tools | read, write, list |
+| 📋 **Plan** | `/plan` | Analisis & perencanaan. AI membaca kode dan membuat rencana. **Read-only** — tidak bisa write. | read, list |
+| ✏️ **Edit** | `/edit` | Implementasi langsung. AI mengerjakan perubahan tanpa banyak tanya. | read, write, list |
+| 🤖 **Auto** | `/auto` | Otonom penuh. AI merencanakan & mengeksekusi multi-step sendiri (max 16 iterasi). | read, write, list |
 
-```
-▸ buat file server.go dengan HTTP server sederhana
-⏳ Memulai...
-🔧 read_file({"path":"server.go"}) → Error: file tidak ditemukan
-⏳ Menjalankan write_file...
-🔧 write_file({"path":"server.go","content":"package main\n\nimport..."}) → File berhasil ditulis
-✓ [2.4s · ~320 token]
-─────────────────────────────────────────
-File server.go berhasil dibuat! Berikut isinya...
-─────────────────────────────────────────
-```
+### 2. Slash Commands
 
-### Mode Operasi
-
-Ihand TUI punya 4 mode yang bisa diganti kapan saja. Mode menentukan bagaimana AI bekerja:
-
-| Mode | Command | Perilaku |
-|------|---------|----------|
-| **Chat** | `/chat` | Percakapan normal, bisa pakai semua tools |
-| **Plan** | `/plan` | Analisis & perencanaan. Hanya bisa **read**, tidak bisa write file. AI akan membaca kode dan membuat rencana langkah-demi-langkah |
-| **Edit** | `/edit` | Implementasi langsung. AI akan mengerjakan perubahan tanpa bertanya — langsung tulis/edit file |
-| **Auto** | `/auto` | Otonom penuh. AI merencanakan dan mengeksekusi multi-step sendiri (max 16 iterasi) |
-
-Mode saat ini ditampilkan di header dengan warna berbeda: 🔵 Chat, 🟠 Plan, 🟢 Edit, 🔴 Auto.
-
-### Slash Commands
-
-Ketik `/` untuk melihat perintah yang tersedia:
+Ketik `/` di input — autocomplete akan muncul. Tekan `Tab` untuk cycling.
 
 | Command | Fungsi |
 |---------|--------|
 | `/chat` | Mode percakapan normal |
 | `/plan` | Mode analisis & rencana (read-only) |
 | `/edit` | Mode implementasi & edit file |
-| `/auto` | Mode otonom (multi-step) |
-| `/exit` | Keluar aplikasi |
+| `/auto` | Mode otonom multi-step |
 | `/clear` | Reset percakapan |
-| `/stats` | Lihat statistik session |
+| `/stats` | Statistik session (token, pesan, dll) |
 | `/help` | Tampilkan bantuan |
+| `/exit` | Keluar aplikasi |
 
-Tekan `Tab` untuk cycling antar suggestion, Enter untuk memilih.
+### 3. @Mention File & Folder
 
-### File Operations
-
-AI bisa membaca, menulis, dan me-list file di direktori yang diizinkan:
+Ketik `@` di input untuk autocomplete file/folder dari direktori kerja:
 
 ```
-▸ tulis file halo.txt isinya Hello World
-🔧 write_file({"path":"halo.txt","content":"Hello World"}) → File berhasil ditulis (11 bytes)
-✓ File halo.txt berhasil dibuat!
-
-▸ baca isi file halo.txt
-🔧 read_file({"path":"halo.txt"}) → {"content":"Hello World"}
-✓ Isi file halo.txt adalah "Hello World"
-
-▸ file apa saja yang ada di sini?
-🔧 list_files({"path":"."}) → [halo.txt, main.go, ...]
+▸ tolong baca @cha           ← Tab untuk cycling
+▸ tolong baca @chat.go       ← terpilih!
 ```
 
-> **Keamanan:** Tools dibatasi hanya dalam direktori yang diizinkan. Akses `../` ditolak, read dibatasi 1MB.
+- **Case-insensitive** — `@cha` cocok dengan `chat.go`
+- **Prefix match diprioritaskan** — file yang diawali query muncul duluan
+- **Max 20 hasil**, depth 4 level
+- Skip: `.git/`, `node_modules/`, hidden files, file >1MB
+- Tekan `Tab` untuk cycling antar saran, saran yang dipilih menggantikan hanya bagian `@query`
 
-### Keyboard Shortcuts
+### 4. File Operations
+
+AI bisa membaca, menulis, dan me-list file. Tool output ditampilkan dengan format ringkas:
+
+```
+▸ buat file server.go dengan HTTP server sederhana
+
+🔧 write_file({"path":"server.go","content":"..."}) → ✓ File berhasil ditulis: server.go (1024 bytes)
+🔧 read_file({"path":"server.go"}) → ✓ Dibaca: server.go (1024 bytes)
+🔧 list_files({"path":"."}) → ✓ 12 file/direktori di .
+```
+
+> **Keamanan:** Tools dibatasi hanya dalam `allowed_dir`. Path traversal (`../`) ditolak. Read dibatasi 1MB.
+
+### 5. Markdown Rendering
+
+Response AI di-render dengan Glamour (dark theme):
+- **Code block** dengan syntax highlighting
+- **Tabel**, list, heading
+- **Bold**, italic, link
+- Word wrapping otomatis sesuai lebar terminal
+
+### 6. ReAct Loop dengan Real-time Update
+
+Setiap langkah AI — thinking, tool call, hasil — ditampilkan **real-time** di chat. Tidak perlu menunggu seluruh proses selesai.
+
+---
+
+## Keyboard Shortcuts
 
 | Key | Fungsi |
 |-----|--------|
 | `Enter` | Kirim pesan |
 | `Ctrl+J` | Baris baru (multiline input) |
-| `Tab` | Cycling suggestion (saat autocomplete muncul) |
+| `Tab` | Cycling suggestion (slash command / @mention) |
 | `Shift+Tab` | Ganti mode: Chat → Plan → Edit → Auto |
 | `Ctrl+C` / `Ctrl+D` | Keluar |
-| `Ctrl+L` | Scroll ke atas |
-| `↑` `↓` | Scroll viewport per baris |
+| `Ctrl+L` | Scroll viewport ke atas |
+| `↑` `↓` | Scroll per baris |
 | `PgUp` `PgDn` | Scroll per halaman |
 | `Home` `End` | Lompat ke awal / akhir |
 | `Mouse wheel` | Scroll |
 
 ---
 
-## Flag CLI
+## CLI Flags
 
 | Flag | Default | Fungsi |
 |------|---------|--------|
-| `--config` | `settings.json` | Path ke file konfigurasi |
+| `--config` | `settings.json` | Path ke file konfigurasi JSON |
+| `--version` | — | Tampilkan versi |
 | Argumen ke-1 | `.` | Direktori untuk file operations |
 
 ```bash
-# Pakai config di lokasi lain
-./ihand-tui --config ~/.config/ihand-tui.json
+ihand --version                          # → ihand version 1.0.0
+ihand --config ~/.config/ihand.json     # config custom
+ihand ~/my-project                       # batasi ke folder tertentu
+```
 
-# Batasi file operations ke folder tertentu
-./ihand-tui ~/projects
+---
+
+## Install Methods
+
+### curl (macOS & Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
+```
+
+Skrip akan clone repo, build, dan install ke `/usr/local/bin/ihand`.
+
+### make (dari source)
+
+```bash
+git clone https://github.com/bachtiarpanjaitan/ihandtui.git
+cd ihandtui
+
+make install      # build + install ke /usr/local/bin
+make build        # build saja (binary: ./ihand)
+make build-all    # cross-compile semua platform → dist/
+make uninstall    # hapus dari /usr/local/bin
+```
+
+### Install script lokal
+
+```bash
+# macOS / Linux
+bash scripts/install.sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+```
+
+### Build manual
+
+```bash
+git clone https://github.com/bachtiarpanjaitan/ihandtui.git
+cd ihandtui
+go build -o ihand .
+./ihand
+```
+
+### Cross-compile (untuk distribusi)
+
+```bash
+make build-all
+# Output di dist/:
+#   ihand-windows-amd64.exe
+#   ihand-darwin-amd64
+#   ihand-darwin-arm64
+#   ihand-linux-amd64
+#   ihand-linux-arm64
+```
+
+---
+
+## Uninstall
+
+```bash
+# macOS / Linux
+sudo rm /usr/local/bin/ihand
+
+# Atau via make (dari direktori proyek)
+make uninstall
+
+# Windows
+rm -r %USERPROFILE%\AppData\Local\ihand
+# Lalu hapus dari User PATH via System Settings
+```
+
+---
+
+## Project Structure
+
+```
+ihandtui/
+├── main.go              # Entry point, flag parsing, init
+├── model.go             # Data model, types, constructor
+├── chat.go              # ReAct loop, tool parsing, display formatting
+├── update.go            # Bubble Tea Update, key handling, @mention
+├── view.go              # Bubble Tea View, conversation rendering, markdown
+├── commands.go          # Slash commands & autocomplete
+├── helpers.go           # Token counter, file suggestion search
+├── styles.go            # Lipgloss style definitions
+├── layout.go            # Layout calculation
+├── welcome.go           # Welcome message
+├── config.go            # JSON config loading
+├── Makefile             # Build, install, cross-compile
+├── scripts/
+│   ├── install.sh       # Installer lokal (macOS/Linux)
+│   ├── install-remote.sh # Installer via curl
+│   └── install.ps1      # Installer Windows
+├── internal/
+│   ├── providers/       # LLM provider implementations
+│   │   ├── openai.go
+│   │   └── anthropic.go
+│   └── tools/           # File operation tools
+│       └── tools.go     # ReadFile, WriteFile, ListFiles
+├── settings.json        # Konfigurasi (user-specific, di-gitignore)
+└── go.mod
 ```
 
 ---

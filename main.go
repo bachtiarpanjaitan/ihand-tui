@@ -15,9 +15,17 @@ import (
 	_ "test-ihandai/internal/providers"
 )
 
+var version = "dev" // set via ldflags: -X main.version=1.0.0
+
 func main() {
 	configPath := flag.String("config", "settings.json", "path ke file konfigurasi JSON")
+	showVersion := flag.Bool("version", false, "tampilkan versi")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("ihand version %s\n", version)
+		os.Exit(0)
+	}
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
