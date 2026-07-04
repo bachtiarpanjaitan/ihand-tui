@@ -24,7 +24,15 @@ ihand
 
 ### Konfigurasi
 
-Buat file `settings.json` di direktori tempat kamu menjalankan `ihand`, atau arahkan dengan flag `--config`:
+Saat pertama kali dijalankan, `ihand` otomatis membuat file config di lokasi berikut:
+
+| OS | Path |
+|----|------|
+| macOS | `~/Library/Application Support/ihand/settings.json` |
+| Linux | `~/.config/ihand/settings.json` |
+| Windows | `%APPDATA%/ihand/settings.json` |
+
+Edit file tersebut sesuai provider yang dipakai:
 
 ```json
 {

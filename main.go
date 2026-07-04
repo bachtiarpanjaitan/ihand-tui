@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"github.com/bachtiarpanjaitan/ihandai-go"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
@@ -17,8 +19,60 @@ import (
 
 var version = "dev" // set via ldflags: -X main.version=1.0.0
 
+// defaultConfigPath returns the OS-specific config directory.
+func defaultConfigPath() string {
+	var dir string
+	switch runtime.GOOS {
+	case "windows":
+		dir = os.Getenv("APPDATA")
+		if dir == "" {
+			dir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
+		}
+	case "darwin":
+		dir = filepath.Join(os.Getenv("HOME"), "Library", "Application Support")
+	default: // linux & others
+		dir = os.Getenv("XDG_CONFIG_HOME")
+		if dir == "" {
+			dir = filepath.Join(os.Getenv("HOME"), ".config")
+		}
+	}
+	return filepath.Join(dir, "ihand", "settings.json")
+}
+
+// ensureConfig ensures a config file exists at the given path.
+// If it doesn't exist, creates the directory and writes a default template.
+func ensureConfig(path string) {
+	if _, err := os.Stat(path); err == nil {
+		return // already exists
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Gagal membuat direktori config: %v\n", err)
+		return
+	}
+	defaultJSON := `{
+  "llm": {
+    "provider": "ollama",
+    "model": "llama3.2",
+    "api_key": "",
+    "base_url": ""
+  },
+  "app": {
+    "allowed_dir": ".",
+    "session": "default"
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(defaultJSON), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Gagal menulis config default: %v\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "✓ Config dibuat di %s\n", path)
+}
+
 func main() {
-	configPath := flag.String("config", "settings.json", "path ke file konfigurasi JSON")
+	defaultCfg := defaultConfigPath()
+	configPath := flag.String("config", defaultCfg, "path ke file konfigurasi JSON")
 	showVersion := flag.Bool("version", false, "tampilkan versi")
 	flag.Parse()
 
@@ -26,6 +80,8 @@ func main() {
 		fmt.Printf("ihand version %s\n", version)
 		os.Exit(0)
 	}
+
+	ensureConfig(*configPath)
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
