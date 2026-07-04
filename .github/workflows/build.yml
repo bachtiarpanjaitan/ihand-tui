@@ -34,7 +34,13 @@ jobs:
         run: go vet ./...
 
       - name: Build
-        run: go build -ldflags="-X main.version=${{ github.ref_name }}" -o ihand .
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            go build -ldflags="-X main.version=${{ github.ref_name }}" -o ihand.exe .
+          else
+            go build -ldflags="-X main.version=${{ github.ref_name }}" -o ihand .
+          fi
 
       - name: Verify --version
         shell: bash
@@ -65,7 +71,48 @@ jobs:
       - name: Build all platforms
         run: make build-all VERSION=${{ github.ref_name }}
 
-      - name: Upload artifacts
+      - name: Package installers
+        shell: bash
+        run: |
+          mkdir -p packages
+          VERSION="${{ github.ref_name }}"
+
+          # Windows — zip with install script
+          cp dist/ihand-windows-amd64.exe ihand.exe
+          zip packages/ihand-${VERSION}-windows-amd64.zip ihand.exe scripts/install.ps1
+          rm ihand.exe
+
+          # macOS Intel — tar.gz
+          cp dist/ihand-darwin-amd64 ihand
+          tar czf packages/ihand-${VERSION}-darwin-amd64.tar.gz ihand scripts/install.sh
+          rm ihand
+
+          # macOS Apple Silicon — tar.gz
+          cp dist/ihand-darwin-arm64 ihand
+          tar czf packages/ihand-${VERSION}-darwin-arm64.tar.gz ihand scripts/install.sh
+          rm ihand
+
+          # Linux amd64 — tar.gz
+          cp dist/ihand-linux-amd64 ihand
+          tar czf packages/ihand-${VERSION}-linux-amd64.tar.gz ihand scripts/install.sh
+          rm ihand
+
+          # Linux arm64 — tar.gz
+          cp dist/ihand-linux-arm64 ihand
+          tar czf packages/ihand-${VERSION}-linux-arm64.tar.gz ihand scripts/install.sh
+          rm ihand
+
+          echo "📦 Packages:"
+          ls -lh packages/
+
+      - name: Upload packages (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ihand-packages
+          path: packages/*
+          retention-days: 7
+
+      - name: Upload raw binaries (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: ihand-binaries
@@ -81,11 +128,17 @@ jobs:
     needs: cross-compile
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Download artifacts
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          name: ihand-packages
+          path: packages
+
+      - name: Download raw binaries
         uses: actions/download-artifact@v4
         with:
           name: ihand-binaries
-          path: .
+          path: dist
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -95,25 +148,28 @@ jobs:
           body: |
             ## Ihand TUI ${{ github.ref_name }}
 
-            ### 📦 Binary
+            ### 📦 Download & Install
 
-            | Platform | File |
-            |----------|------|
-            | Windows (amd64) | `ihand-windows-amd64.exe` |
-            | macOS (Intel) | `ihand-darwin-amd64` |
-            | macOS (Apple Silicon) | `ihand-darwin-arm64` |
-            | Linux (amd64) | `ihand-linux-amd64` |
-            | Linux (arm64) | `ihand-linux-arm64` |
+            | Platform | Package |
+            |----------|---------|
+            | 🪟 Windows | `ihand-${{ github.ref_name }}-windows-amd64.zip` |
+            | 🍎 macOS Intel | `ihand-${{ github.ref_name }}-darwin-amd64.tar.gz` |
+            | 🍎 macOS Apple Silicon | `ihand-${{ github.ref_name }}-darwin-arm64.tar.gz` |
+            | 🐧 Linux amd64 | `ihand-${{ github.ref_name }}-linux-amd64.tar.gz` |
+            | 🐧 Linux arm64 | `ihand-${{ github.ref_name }}-linux-arm64.tar.gz` |
 
-            ### ⚡ Quick Install
+            ### ⚡ Quick Install (curl)
 
             ```bash
-            # macOS / Linux
             curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihandtui/main/scripts/install-remote.sh | bash
             ```
 
             ### 🔨 Manual Install
 
-            Download binary di atas, rename ke `ihand`, taruh di PATH.
-          files: dist/*
+            1. Download package sesuai platform
+            2. Ekstrak — berisi binary `ihand` + install script
+            3. Jalankan `bash install.sh` (macOS/Linux) atau `powershell -File install.ps1` (Windows)
+          files: |
+            packages/*
+            dist/*
           generate_release_notes: true
