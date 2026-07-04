@@ -497,6 +497,7 @@ func (m model) View() tea.View {
 	rendered := m.renderFull()
 	v := tea.NewView(rendered)
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeAllMotion
 	return v
 }
 
@@ -811,11 +812,10 @@ func (m *model) buildConversation() string {
 		return welcomeMessage(m.provider, m.modelName)
 	}
 
-	vpWidth := m.viewport.Width()
-	if vpWidth < 40 {
-		vpWidth = 40
+	contentWidth := m.width - 6
+	if contentWidth < 40 {
+		contentWidth = 40
 	}
-	contentWidth := vpWidth - 4
 
 	var sb strings.Builder
 
@@ -878,18 +878,21 @@ func (m *model) renderMarkdown(text string, width int) string {
 			glamour.WithWordWrap(wrapWidth),
 		)
 		if err != nil {
-			// Fallback: coba tanpa style
-			r, err = glamour.NewTermRenderer(
-				glamour.WithWordWrap(wrapWidth),
-			)
-			if err != nil {
-				return text
-			}
+			r = nil
 		}
 		m.mdRenderer = r
 	}
 
-	rendered, err := m.mdRenderer.Render(text)
+	// Gunakan persistent renderer jika tersedia
+	if m.mdRenderer != nil {
+		rendered, err := m.mdRenderer.Render(text)
+		if err == nil {
+			return rendered
+		}
+	}
+
+	// Fallback: one-shot render tanpa width control
+	rendered, err := glamour.Render(text, "dark")
 	if err != nil {
 		return text
 	}
@@ -934,14 +937,20 @@ func (m *model) renderSuggestions() string {
 
 func (m *model) recalcLayout() {
 	// Height budget:
-	//   header  : 1
-	//   sep1    : 1
-	//   status  : 1
-	//   input   : 3 (textarea)
-	//   Total overhead = 6
+	//   header     : 1
+	//   header sep : 1
+	//   bottom sep : 1
+	//   status     : 1
+	//   textarea   : 3 (SetHeight)
+	//   suggestions: 0 or 1
+	//   Fixed overhead = 7
 
-	const overhead = 8
-	vpHeight := m.height - overhead
+	fixedOverhead := 7
+	sugHeight := 0
+	if len(m.suggestions) > 0 {
+		sugHeight = 1
+	}
+	vpHeight := m.height - fixedOverhead - sugHeight
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
