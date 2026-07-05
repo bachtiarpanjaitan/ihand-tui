@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/bachtiarpanjaitan/ihandai-go/pkg/core"
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -124,6 +126,19 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle y/n di state confirming
+		if m.state == stateConfirming {
+			input := strings.TrimSpace(m.textarea.Value())
+			m.textarea.Reset()
+			if input == "y" || input == "Y" || input == "yes" {
+				return m.handleConfirmApprove()
+			}
+			if input == "n" || input == "N" || input == "no" {
+				return m.handleConfirmDeny()
+			}
+			return m, nil
+		}
+
 		m.suggestions = nil
 		m.suggestionType = ""
 		m.selSugg = -1
@@ -229,4 +244,66 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		return m, cmd
 	}
+}
+
+
+// handleConfirmApprove mengeksekusi tool setelah disetujui user.
+func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
+	toolOutput := executeToolCall(m.pendingState.activeTools, m.pendingTool)
+	state := m.pendingState
+	state.messages = append(state.messages,
+		core.Message{Role: "assistant", Content: m.pendingToolResp},
+		core.Message{Role: "user", Content: fmt.Sprintf(
+			"Observation (hasil dari tool %s): %s", m.pendingTool.name, toolOutput,
+		)},
+	)
+	state.iteration++
+	display := formatToolDisplay(m.pendingTool.name, m.pendingTool.input, toolOutput)
+	// Activity bar: concise summary (single line, tanpa diff)
+	path := extractField(toolOutput, `"path"`)
+	if path == "" {
+		path = m.pendingTool.name
+	}
+	m.toolActivity = fmt.Sprintf("%s \u2014 Selesai", path)
+	m.messages = append(m.messages, chatMessage{
+		role:    "tool",
+		content: display,
+		tokens:  0,
+	})
+	m.state = stateThinking
+	m.pendingTool = reActTool{}
+	m.pendingToolResp = ""
+	m.rebuildViewport()
+	return m, tea.Batch(
+		continueChatLoop(m.ai, m.ctx, state),
+		tickCmd(),
+	)
+}
+
+// handleConfirmDeny memberi tahu LLM bahwa tool ditolak user.
+func (m model) handleConfirmDeny() (tea.Model, tea.Cmd) {
+	state := m.pendingState
+	state.messages = append(state.messages,
+		core.Message{Role: "assistant", Content: m.pendingToolResp},
+		core.Message{Role: "user", Content: fmt.Sprintf(
+			"User DENIED permission to run tool '%s'. "+
+				"Do NOT retry the same tool call. Inform the user and suggest alternatives.",
+			m.pendingTool.name,
+		)},
+	)
+	state.iteration++
+	m.toolActivity = fmt.Sprintf("✗ %s — Ditolak", m.pendingTool.name)
+	m.messages = append(m.messages, chatMessage{
+		role:    "system",
+		content: fmt.Sprintf("✗ Tool %s ditolak user", m.pendingTool.name),
+		tokens:  0,
+	})
+	m.state = stateThinking
+	m.pendingTool = reActTool{}
+	m.pendingToolResp = ""
+	m.rebuildViewport()
+	return m, tea.Batch(
+		continueChatLoop(m.ai, m.ctx, state),
+		tickCmd(),
+	)
 }

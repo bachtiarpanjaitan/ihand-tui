@@ -27,6 +27,7 @@ type chatState int
 const (
 	stateReady chatState = iota
 	stateThinking
+	stateConfirming
 )
 
 type chatMode int
@@ -169,6 +170,9 @@ type model struct {
 	mode        chatMode
 	statusMsg   string
 	toolActivity string // aktivitas tool terakhir (ditampilkan di atas input)
+	pendingTool      reActTool
+	pendingState     chatLoopState
+	pendingToolResp  string
 	err         error
 	suggestions     []string
 	suggestionType  string // "command" atau "file"
@@ -212,10 +216,12 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	writeTool := toolspkg.NewWriteFileTool(allowedDir)
 	readTool := toolspkg.NewReadFileTool(allowedDir)
 	listTool := toolspkg.NewListFilesTool(allowedDir)
-	toolList := []tools.Tool{writeTool, readTool, listTool}
-	ai.SetTools(writeTool, readTool, listTool)
+	browseTool := toolspkg.NewBrowseTool()
+	toolList := []tools.Tool{writeTool, readTool, listTool, browseTool}
+	ai.SetTools(writeTool, readTool, listTool, browseTool)
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
+	vp.SoftWrap = true
 	vp.SetContent(welcomeMessage(provider, modelName, 50))
 	vp.GotoTop()
 
@@ -232,7 +238,7 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		mode:         modeAuto,
 		allowedDir:   allowedDir,
 		toolList:     toolList,
-		mouseEnabled: false,
+		mouseEnabled: true,
 		selSugg:      -1,
 	}
 }

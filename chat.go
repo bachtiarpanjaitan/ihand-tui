@@ -48,7 +48,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		if mode == modePlan || mode == modeChat {
 			activeTools = nil
 			for _, t := range toolList {
-				if t.Name() == "read_file" || t.Name() == "list_files" {
+				if t.Name() == "read_file" || t.Name() == "list_files" || t.Name() == "browse" {
 					activeTools = append(activeTools, t)
 				}
 			}
@@ -153,7 +153,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.toolActivity = "✓ Selesai"
 		m.rebuildViewport()
 		m.statusMsg = ""
-return m.textarea.Focus(), true
+	return m.textarea.Focus(), true
 	}
 
 	maxIterations := 8
@@ -163,6 +163,27 @@ return m.textarea.Focus(), true
 
 	// --- Tool call ---
 	if toolCall.name != "" {
+		// Cek apakah tool butuh permission
+		if needsPermission(toolCall.name) {
+			m.pendingTool = toolCall
+			m.pendingState = state
+			m.pendingToolResp = resp.Content
+			m.state = stateConfirming
+			m.statusMsg = ""
+			m.toolActivity = fmt.Sprintf("🔍 Konfirmasi: %s", toolCall.name)
+			m.messages = append(m.messages, chatMessage{
+				role:    "confirm",
+				content: fmt.Sprintf(
+					"%s|%s|%s",
+					toolCall.name,
+					extractField(toolCall.input, "\"path\""),
+					extractField(toolCall.input, "\"content\""),
+				),
+			})
+			m.rebuildViewport()
+			return m.textarea.Focus(), true
+		}
+
 		toolOutput := executeToolCall(state.activeTools, toolCall)
 		isToolError := strings.HasPrefix(toolOutput, "Error")
 
@@ -172,8 +193,8 @@ return m.textarea.Focus(), true
 		if isToolError {
 			role = "tool-error"
 		}
-		// Activity bar shows latest tool (above input)
-		m.toolActivity = display
+		// Activity bar shows latest tool (above input) - concise single line
+		m.toolActivity = fmt.Sprintf("%s", toolCall.name)
 		// Conversation keeps full history
 		m.messages = append(m.messages, chatMessage{
 			role:    role,
@@ -219,7 +240,7 @@ return m.textarea.Focus(), true
 			m.toolActivity = "✓ Selesai"
 			m.rebuildViewport()
 			m.statusMsg = ""
-return m.textarea.Focus(), true
+	return m.textarea.Focus(), true
 		}
 
 		// Update UI and continue loop
@@ -246,7 +267,17 @@ return m.textarea.Focus(), true
 		m.toolActivity = "✓ Selesai"
 	m.rebuildViewport()
 	m.statusMsg = ""
-return m.textarea.Focus(), true
+	return m.textarea.Focus(), true
+}
+
+// needsPermission returns true jika tool memerlukan konfirmasi user sebelum dieksekusi.
+func needsPermission(name string) bool {
+	switch name {
+	case "write_file", "read_file":
+		return true
+	default:
+		return false
+	}
 }
 
 // rebuildViewport is a helper to re-render the viewport after state changes.
@@ -319,24 +350,52 @@ func formatToolDisplay(toolName, input, output string) string {
 	case "write_file":
 		success := strings.Contains(output, `"success": true`) || strings.Contains(output, `"success":true`)
 		if path != "" {
-			// Extract content from input to show what was written
-			content := extractField(input, `"content"`)
 			preview := ""
-			if content != "" {
-				if len(content) > 500 {
-					preview = "\n" + content[:500] + "..."
-				} else {
-					preview = "\n" + content
+			// Extract diff from tool output
+			diffStr := extractField(output, `"diff"`)
+			var previewDiff string
+			if diffStr != "" {
+				// Decode JSON string, lalu split
+				var diffText string
+				if err := json.Unmarshal([]byte(`"` + diffStr + `"`), &diffText); err == nil && diffText != "" {
+					diffLines := strings.Split(diffText, "\n")
+					var b strings.Builder
+					for _, line := range diffLines {
+						if len(line) > 0 {
+							switch line[0] {
+							case '+':
+								b.WriteString("  \033[32m" + line + "\033[0m\n")
+							case '-':
+								b.WriteString("  \033[31m" + line + "\033[0m\n")
+							default:
+								b.WriteString("  " + line + "\n")
+							}
+						}
+					}
+					previewDiff = b.String()
 				}
 			}
 			if success || strings.Contains(output, "berhasil") {
-				return fmt.Sprintf("%s — Ditulis (%d bytes)%s", path, size, preview)
+				if previewDiff != "" {
+					return fmt.Sprintf("%s \u2014 %d baris", path, size) + previewDiff
+				}
+				// Fallback: content preview (jika diff kosong)
+				c := extractField(input, `"content"`)
+				preview := ""
+				if c != "" {
+					if len(c) > 500 {
+						preview = "\n" + c[:500] + "..."
+					} else {
+						preview = "\n" + c
+					}
+				}
+				return fmt.Sprintf("%s \u2014 Ditulis (%d bytes)%s", path, size, preview)
 			}
 			msg := extractField(output, `"message"`)
 			if msg != "" {
-				return fmt.Sprintf("%s — %s%s", path, msg, preview)
+				return fmt.Sprintf("%s \u2014 %s%s", path, msg, preview)
 			}
-			return fmt.Sprintf("%s — Selesai%s", path, preview)
+			return fmt.Sprintf("%s \u2014 Selesai%s", path, preview)
 		}
 	case "list_files":
 		if path != "" {
@@ -438,22 +497,23 @@ func extractField(raw, field string) string {
 	if strings.HasPrefix(rest, `"`) {
 		rest = rest[1:] // lewati quote pembuka
 
-		// Cari quote penutup terakhir sebelum "}".
-		closingBrace := strings.LastIndex(rest, `}`)
-		if closingBrace < 0 {
-			closingBrace = len(rest)
-		}
-
-		beforeBrace := rest[:closingBrace]
-		lastQuote := strings.LastIndex(beforeBrace, `"`)
-		if lastQuote < 0 {
-			lastQuote = strings.Index(rest, `"`)
-			if lastQuote < 0 {
-				return rest
+		// Cari quote penutup (handle escaped quotes dengan \\)
+		end := -1
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '\\' {
+				i++ // skip escaped char
+				continue
+			}
+			if rest[i] == '"' {
+				end = i
+				break
 			}
 		}
 
-		return rest[:lastQuote]
+		if end < 0 {
+			return rest
+		}
+		return rest[:end]
 	}
 
 	// Handle numeric values (size, count, dll)

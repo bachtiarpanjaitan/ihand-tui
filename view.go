@@ -152,12 +152,16 @@ func (m *model) buildConversation() string {
 				msg.timing.Round(time.Millisecond), msg.tokens)
 			sb.WriteString(checkStyle.Render(info))
 			sb.WriteString("\n")
-			sb.WriteString(separatorStyle.Render(strings.Repeat("─", contentWidth)))
-			sb.WriteString("\n\n")
 			rendered := m.renderMarkdown(msg.content, contentWidth)
-			sb.WriteString(rendered)
-			sb.WriteString("\n")
-			sb.WriteString(separatorStyle.Render(strings.Repeat("─", contentWidth)))
+			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" {
+					sb.WriteString("\n")
+					continue
+				}
+				sb.WriteString("  • " + line + "\n")
+			}
 
 		case "tool":
 			sb.WriteString(toolStyle().Render("" + msg.content))
@@ -168,6 +172,9 @@ func (m *model) buildConversation() string {
 		case "system":
 			sb.WriteString(dimStyle.Render("ℹ " + msg.content))
 
+		case "confirm":
+			sb.WriteString(m.renderConfirmPrompt(msg.content))
+
 		case "error":
 			sb.WriteString(errorStyle.Render("✗ " + msg.content))
 		}
@@ -177,6 +184,111 @@ func (m *model) buildConversation() string {
 			sb.WriteString("\n")
 		}
 	}
+
+	return sb.String()
+}
+
+func (m *model) renderConfirmPrompt(data string) string {
+	// Format: "toolName|path|content"
+	parts := strings.SplitN(data, "|", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	toolName := parts[0]
+	path := parts[1]
+	content := ""
+	if len(parts) > 2 {
+		content = parts[2]
+	}
+
+	boxWidth := m.width - 10
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+	innerWidth := boxWidth - 2
+
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	dimValue := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
+
+	var icon string
+	switch toolName {
+	case "write_file":
+		icon = "\u270f\ufe0f"
+	case "read_file":
+		icon = "\U0001f4d6"
+	default:
+		icon = "\U0001f527"
+	}
+
+	var sb strings.Builder
+
+	// Top border
+	sb.WriteString(borderStyle.Render("\u250c" + strings.Repeat("\u2500", innerWidth) + "\u2510"))
+	sb.WriteString("\n")
+
+	// Title: icon + tool name
+	title := fmt.Sprintf(" %s  %s  ", icon, titleStyle.Render(toolName))
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString(title)
+	padding := innerWidth - lipgloss.Width(title)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString("\n")
+
+	// Path
+	pathText := fmt.Sprintf(" %s %s", labelStyle.Render("Path:"), valueStyle.Render(path))
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString(pathText)
+	padding = innerWidth - lipgloss.Width(pathText)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString("\n")
+
+	// Content preview untuk write_file
+	if toolName == "write_file" && content != "" {
+		preview := content
+		if len(preview) > 100 {
+			preview = preview[:100] + "..."
+		}
+		// Escape newlines for single-line display
+		preview = strings.ReplaceAll(preview, "\n", "\\n")
+		preview = strings.ReplaceAll(preview, "\r", "")
+		contentText := fmt.Sprintf(" %s %s", labelStyle.Render("Content:"), dimValue.Render(preview))
+		sb.WriteString(borderStyle.Render("\u2502"))
+		sb.WriteString(contentText)
+		padding = innerWidth - lipgloss.Width(contentText)
+		if padding > 0 {
+			sb.WriteString(strings.Repeat(" ", padding))
+		}
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString("\n")
+	}
+
+	// Empty line separator
+	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
+	sb.WriteString("\n")
+
+	// Action hint
+	hint := fmt.Sprintf(" %s", hintStyle.Render("Allow?  (y) Yes  (n) No  lalu Enter"))
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString(hint)
+	padding = innerWidth - lipgloss.Width(hint)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("\u2502"))
+	sb.WriteString("\n")
+
+	// Bottom border
+	sb.WriteString(borderStyle.Render("\u2514" + strings.Repeat("\u2500", innerWidth) + "\u2518"))
 
 	return sb.String()
 }
@@ -245,6 +357,6 @@ func (m *model) renderSuggestions() string {
 	}
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, items...)
-	hint := suggestionDimStyle.Render(" Tab ↻")
+	hint := suggestionDimStyle.Render(" Tab \u21bb")
 	return lipgloss.JoinHorizontal(lipgloss.Top, row, hint)
 }
