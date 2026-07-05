@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/atotto/clipboard"
+	tea "charm.land/bubbletea/v2"
 )
 
 func countTokens(text string) int {
@@ -119,4 +123,33 @@ func computeFileSuggestions(input string, allowedDir string) ([]string, int) {
 	}
 
 	return matches, atIdx
+}
+
+// copyConversation copies the entire conversation to the system clipboard.
+func copyConversation(m *model) tea.Cmd {
+	return func() tea.Msg {
+		if len(m.messages) == 0 {
+			return nil
+		}
+		var sb strings.Builder
+		for _, msg := range m.messages {
+			switch msg.role {
+			case "user":
+				sb.WriteString(">> " + msg.content + "\n")
+			case "assistant":
+				sb.WriteString(msg.content + "\n")
+			case "tool", "tool-error":
+				sb.WriteString("-- " + msg.content + "\n")
+			}
+		}
+		text := sb.String()
+		if text == "" {
+			return nil
+		}
+		if err := clipboard.WriteAll(text); err != nil {
+			return llmErrorMsg{err: fmt.Errorf("gagal copy: %v", err)}
+		}
+		m.toolActivity = "Disalin ke clipboard (" + fmt.Sprintf("%d", len(text)) + " karakter)"
+		return nil
+	}
 }

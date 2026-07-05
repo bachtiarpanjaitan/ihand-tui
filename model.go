@@ -9,6 +9,7 @@ import (
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/memory"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/tools"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	glamour "charm.land/glamour/v2"
@@ -167,11 +168,15 @@ type model struct {
 	state       chatState
 	mode        chatMode
 	statusMsg   string
+	toolActivity string // aktivitas tool terakhir (ditampilkan di atas input)
 	err         error
 	suggestions     []string
 	suggestionType  string // "command" atau "file"
 	fileQueryStart  int    // posisi karakter '@' di input untuk replace
 	selSugg         int
+
+	mouseEnabled bool // toggle mouse capture (for text selection)
+	tickCount    int  // animation counter for status dots
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
@@ -187,6 +192,12 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 8192
+
+	// Tambahkan "ctrl+j" ke InsertNewline karena textarea hanya bind "enter" dan "ctrl+m"
+	ta.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("enter", "ctrl+m", "ctrl+j", "shift+enter"),
+		key.WithHelp("enter", "insert newline"),
+	)
 
 	s := ta.Styles()
 	s.Focused.Prompt = lipgloss.NewStyle().Foreground(promptColor).Bold(true)
@@ -205,7 +216,7 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	ai.SetTools(writeTool, readTool, listTool)
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
-	vp.SetContent(welcomeMessage(provider, modelName))
+	vp.SetContent(welcomeMessage(provider, modelName, 50))
 	vp.GotoTop()
 
 	return model{
@@ -217,10 +228,11 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		ai:         ai,
 		ctx:        context.Background(),
 		memory:     store,
-		state:      stateReady,
-		mode:       modeChat,
-		allowedDir: allowedDir,
-		toolList:   toolList,
-		selSugg:    -1,
+		state:        stateReady,
+		mode:         modeAuto,
+		allowedDir:   allowedDir,
+		toolList:     toolList,
+		mouseEnabled: false,
+		selSugg:      -1,
 	}
 }

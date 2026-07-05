@@ -33,7 +33,7 @@ func selfUpdate(currentVersion string) string {
 	current := strings.TrimPrefix(currentVersion, "v")
 
 	if latest == current {
-		return fmt.Sprintf("✅ Sudah versi terbaru: v%s", current)
+		return fmt.Sprintf("Sudah versi terbaru: v%s", current)
 	}
 
 	// --- Find the right asset for this platform ----------------------------
@@ -271,7 +271,7 @@ func extractZip(zipPath, dst string) (string, error) {
 // replaceOnUnix tries in-place replace. If permission denied, tries sudo automatically.
 func replaceOnUnix(currentPath, newPath, latest string) string {
 	if err := atomicReplace(currentPath, newPath); err == nil {
-		return fmt.Sprintf("✅ Diupdate ke v%s!\n\n⚠ Silakan restart ihand untuk menggunakan versi baru.", latest)
+		return fmt.Sprintf("Diupdate ke v%s!\n\n! Silakan restart ihand untuk menggunakan versi baru.", latest)
 	}
 
 	// Permission denied — try sudo mv
@@ -286,12 +286,12 @@ func replaceOnUnix(currentPath, newPath, latest string) string {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err == nil {
-		return fmt.Sprintf("✅ Diupdate ke v%s!\n\n⚠ Silakan restart ihand untuk menggunakan versi baru.", latest)
+		return fmt.Sprintf("Diupdate ke v%s!\n\n! Silakan restart ihand untuk menggunakan versi baru.", latest)
 	}
 
 	// sudo failed — show manual command as last resort
 	return fmt.Sprintf(
-		"✅ Binary v%s sudah didownload.\n\n"+
+		"Binary v%s sudah didownload.\n\n"+
 			"Update gagal otomatis. Jalankan manual:\n\n"+
 			"  sudo mv %s %s\n\n"+
 			"Lalu restart ihand.",
@@ -342,7 +342,7 @@ func replaceOnWindows(currentPath, newPath, latest string) string {
 	}
 
 	return fmt.Sprintf(
-		"✅ Binary v%s sudah didownload.\n\n"+
+		"Binary v%s sudah didownload.\n\n"+
 			"Update script dibuat di:\n  %s\n\n"+
 			"Jalankan script tersebut untuk menyelesaikan update,\n"+
 			"atau tutup ihand dan jalankan:\n\n"+

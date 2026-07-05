@@ -11,7 +11,7 @@ func (m *model) recalcLayout() {
 		vpHeight = 5
 	}
 
-	vpWidth := m.width - 2
+	vpWidth := m.width
 	if vpWidth < 40 {
 		vpWidth = 40
 	}

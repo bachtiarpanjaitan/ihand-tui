@@ -69,7 +69,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
-			content: "🧹 Percakapan direset.",
+			content: "Percakapan direset.",
 		})
 
 		content := m.buildConversation()
@@ -80,7 +80,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "/stats":
 		history, _ := m.memory.History(m.ctx, m.session)
 		statText := fmt.Sprintf(
-			"📊 Session: %s\n   Pesan di memori: %d\n   Total token: ~%d\n   Terminal: %dx%d",
+			"Session: %s\n   Pesan di memori: %d\n   Total token: ~%d\n   Terminal: %dx%d",
 			m.session, len(history), m.totalTokens, m.width, m.height,
 		)
 		m.messages = append(m.messages, chatMessage{
@@ -124,7 +124,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	default:
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
-			content: fmt.Sprintf("⚠ Perintah tidak dikenal: %s. Ketik /help untuk bantuan.", input),
+			content: fmt.Sprintf("! Perintah tidak dikenal: %s. Ketik /help untuk bantuan.", input),
 		})
 		m.textarea.Reset()
 
@@ -142,11 +142,7 @@ func (m model) switchMode(newMode chatMode) (tea.Model, tea.Cmd) {
 	m.mode = newMode
 	m.textarea.Placeholder = newMode.Placeholder()
 
-	msg := fmt.Sprintf("🎯 Mode: %s", newMode.String())
-	m.messages = append(m.messages, chatMessage{
-		role:    "system",
-		content: msg,
-	})
+	m.toolActivity = fmt.Sprintf("Mode: %s", newMode.String())
 	m.textarea.Reset()
 
 	content := m.buildConversation()

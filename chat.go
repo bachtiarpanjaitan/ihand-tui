@@ -45,7 +45,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		history, _ := store.History(ctx, session)
 
 		activeTools := toolList
-		if mode == modePlan {
+		if mode == modePlan || mode == modeChat {
 			activeTools = nil
 			for _, t := range toolList {
 				if t.Name() == "read_file" || t.Name() == "list_files" {
@@ -105,7 +105,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
 			role:    "error",
-			content: msg.err.Error(),
+			content: "❌ LLM Error: " + msg.err.Error(),
 		})
 		m.rebuildViewport()
 		return m.textarea.Focus(), true
@@ -113,6 +113,26 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	state := msg.state
 	resp := msg.response
+	if resp == nil {
+		m.state = stateReady
+		m.statusMsg = ""
+		m.messages = append(m.messages, chatMessage{
+			role:    "error",
+			content: "❌ LLM Error: respons kosong dari API",
+		})
+		m.rebuildViewport()
+		return m.textarea.Focus(), true
+	}
+	if resp.Content == "" {
+		m.state = stateReady
+		m.statusMsg = ""
+		m.messages = append(m.messages, chatMessage{
+			role:    "error",
+			content: "❌ LLM Error: respons API kosong — cek API key atau koneksi",
+		})
+		m.rebuildViewport()
+		return m.textarea.Focus(), true
+	}
 	state.totalTokens += countTokens(resp.Content)
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
@@ -130,6 +150,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		})
 		m.state = stateReady
 		m.totalTokens += state.totalTokens
+		m.toolActivity = "✓ Selesai"
 		m.rebuildViewport()
 		m.statusMsg = ""
 return m.textarea.Focus(), true
@@ -142,16 +163,18 @@ return m.textarea.Focus(), true
 
 	// --- Tool call ---
 	if toolCall.name != "" {
-		m.statusMsg = fmt.Sprintf("Menjalankan %s...", toolCall.name)
 		toolOutput := executeToolCall(state.activeTools, toolCall)
 		isToolError := strings.HasPrefix(toolOutput, "Error")
 
-		// Show tool call immediately in UI with friendly formatting
+		// Show tool call in both activity bar + conversation
 		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 		role := "tool"
 		if isToolError {
 			role = "tool-error"
 		}
+		// Activity bar shows latest tool (above input)
+		m.toolActivity = display
+		// Conversation keeps full history
 		m.messages = append(m.messages, chatMessage{
 			role:    role,
 			content: display,
@@ -177,7 +200,7 @@ return m.textarea.Focus(), true
 		// Check max iterations
 		if state.iteration >= maxIterations {
 			// Find last assistant message as final content
-			finalContent := "⚠ Agent mencapai batas maksimum iterasi."
+			finalContent := "! Agent mencapai batas maksimum iterasi."
 			for i := len(state.messages) - 1; i >= 0; i-- {
 				if state.messages[i].Role == "assistant" {
 					finalContent = state.messages[i].Content
@@ -193,6 +216,7 @@ return m.textarea.Focus(), true
 			})
 			m.state = stateReady
 			m.totalTokens += state.totalTokens
+			m.toolActivity = "✓ Selesai"
 			m.rebuildViewport()
 			m.statusMsg = ""
 return m.textarea.Focus(), true
@@ -219,6 +243,7 @@ return m.textarea.Focus(), true
 	m.state = stateReady
 	m.totalTokens += state.totalTokens
 
+		m.toolActivity = "✓ Selesai"
 	m.rebuildViewport()
 	m.statusMsg = ""
 return m.textarea.Focus(), true
@@ -236,62 +261,98 @@ func (m *model) rebuildViewport() {
 // ---------------------------------------------------------------------------
 
 // formatToolDisplay returns a user-friendly display string for a tool call result.
-// For read_file: shows only the file path and size, not the full content.
-// For other tools: shows a clean summary or truncated raw output as fallback.
+// Uses simple string extraction to avoid issues with imperfect JSON from tool output.
 func formatToolDisplay(toolName, input, output string) string {
-	// Try to parse as JSON for clean display
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
-		// Not JSON — show truncated raw output
-		display := output
-		if len(display) > 300 {
-			display = display[:300] + "..."
-		}
-		return fmt.Sprintf("%s(%s) → %s", toolName, input, display)
+	// Extract path from any JSON-like output
+	path := extractField(output, `"path"`)
+	if path == "" {
+		path = extractField(output, `"path\":`)
 	}
+
+	// Check for error
+	errMsg := extractField(output, `"error"`)
+	if errMsg == "" {
+		errMsg = extractField(output, `"error\":`)
+	}
+	if errMsg != "" {
+		switch toolName {
+		case "read_file":
+			return fmt.Sprintf("%s — %s", path, errMsg)
+		case "write_file":
+			return fmt.Sprintf("%s — %s", path, errMsg)
+		case "list_files":
+			return fmt.Sprintf("%s — %s", path, errMsg)
+		}
+	}
+
+	// Extract size
+	sizeStr := extractField(output, `"size"`)
+	if sizeStr == "" {
+		sizeStr = extractField(output, `"size\":`)
+	}
+	size := 0
+	fmt.Sscanf(sizeStr, "%d", &size)
+
+	// Extract count
+	countStr := extractField(output, `"count"`)
+	if countStr == "" {
+		countStr = extractField(output, `"count\":`)
+	}
+	count := 0
+	fmt.Sscanf(countStr, "%d", &count)
 
 	switch toolName {
 	case "read_file":
-		path, _ := parsed["path"].(string)
-		size := 0
-		if s, ok := parsed["size"].(float64); ok {
-			size = int(s)
+		if path != "" {
+			// Show content preview from output
+			content := extractField(output, `"content"`)
+			preview := ""
+			if content != "" {
+				if len(content) > 500 {
+					preview = "\n" + content[:500] + "..."
+				} else {
+					preview = "\n" + content
+				}
+			}
+			return fmt.Sprintf("%s — Dibaca (%d bytes)%s", path, size, preview)
 		}
-		if errMsg, ok := parsed["error"].(string); ok {
-			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
-		}
-		return fmt.Sprintf("%s(%s) → ✓ Dibaca: %s (%d bytes)", toolName, input, path, size)
-
 	case "write_file":
-		path, _ := parsed["path"].(string)
-		if errMsg, ok := parsed["error"].(string); ok {
-			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
+		success := strings.Contains(output, `"success": true`) || strings.Contains(output, `"success":true`)
+		if path != "" {
+			// Extract content from input to show what was written
+			content := extractField(input, `"content"`)
+			preview := ""
+			if content != "" {
+				if len(content) > 500 {
+					preview = "\n" + content[:500] + "..."
+				} else {
+					preview = "\n" + content
+				}
+			}
+			if success || strings.Contains(output, "berhasil") {
+				return fmt.Sprintf("%s — Ditulis (%d bytes)%s", path, size, preview)
+			}
+			msg := extractField(output, `"message"`)
+			if msg != "" {
+				return fmt.Sprintf("%s — %s%s", path, msg, preview)
+			}
+			return fmt.Sprintf("%s — Selesai%s", path, preview)
 		}
-		msg, _ := parsed["message"].(string)
-		if msg == "" {
-			msg = fmt.Sprintf("File berhasil ditulis: %s", path)
-		}
-		return fmt.Sprintf("%s(%s) → ✓ %s", toolName, input, msg)
-
 	case "list_files":
-		path, _ := parsed["path"].(string)
-		count := 0
-		if c, ok := parsed["count"].(float64); ok {
-			count = int(c)
+		if path != "" {
+			return fmt.Sprintf("%s — %d item", path, count)
 		}
-		if errMsg, ok := parsed["error"].(string); ok {
-			return fmt.Sprintf("%s(%s) → ✗ %s", toolName, input, errMsg)
-		}
-		return fmt.Sprintf("%s(%s) → ✓ %d file/direktori di %s", toolName, input, count, path)
-
-	default:
-		// Unknown tool — show truncated raw output
-		display := output
-		if len(display) > 300 {
-			display = display[:300] + "..."
-		}
-		return fmt.Sprintf("%s(%s) → %s", toolName, input, display)
 	}
+
+	// Fallback: just extract path and show simple message
+	if path != "" {
+		return fmt.Sprintf("%s: %s", toolName, path)
+	}
+	display := output
+	if len(display) > 200 {
+		display = display[:200] + "..."
+	}
+	return fmt.Sprintf("%s: %s", toolName, display)
 }
 
 // ---------------------------------------------------------------------------
@@ -356,8 +417,7 @@ func fixJSON(raw string) string {
 }
 
 // extractField mengekstrak nilai string dari field JSON seperti "path" atau "content".
-// Lebih robust dari extractStringValue — mencari quote penutup dengan
-// menghitung dari belakang untuk handle nested quotes dalam konten.
+// Juga handle nilai non-string seperti angka (size, count).
 func extractField(raw, field string) string {
 	idx := strings.Index(raw, field)
 	if idx < 0 {
@@ -371,33 +431,37 @@ func extractField(raw, field string) string {
 	}
 	rest := raw[idx+colonIdx+1:]
 
-	// Skip whitespace dan quote pembuka
+	// Skip whitespace
 	rest = strings.TrimSpace(rest)
-	if !strings.HasPrefix(rest, `"`) {
-		return ""
-	}
-	rest = rest[1:] // lewati quote pembuka
 
-	// "content" adalah field terakhir, jadi quote penutupnya adalah
-	// quote terakhir sebelum "}" penutup JSON.
-	// Cari dari belakang: " diikuti optional whitespace lalu }
-	closingBrace := strings.LastIndex(rest, `}`)
-	if closingBrace < 0 {
-		closingBrace = len(rest)
-	}
+	// Handle quoted string values
+	if strings.HasPrefix(rest, `"`) {
+		rest = rest[1:] // lewati quote pembuka
 
-	// Cari quote terakhir sebelum closing brace
-	beforeBrace := rest[:closingBrace]
-	lastQuote := strings.LastIndex(beforeBrace, `"`)
-	if lastQuote < 0 {
-		// Fallback: cari quote pertama
-		lastQuote = strings.Index(rest, `"`)
-		if lastQuote < 0 {
-			return rest // return as-is, no closing quote found
+		// Cari quote penutup terakhir sebelum "}".
+		closingBrace := strings.LastIndex(rest, `}`)
+		if closingBrace < 0 {
+			closingBrace = len(rest)
 		}
+
+		beforeBrace := rest[:closingBrace]
+		lastQuote := strings.LastIndex(beforeBrace, `"`)
+		if lastQuote < 0 {
+			lastQuote = strings.Index(rest, `"`)
+			if lastQuote < 0 {
+				return rest
+			}
+		}
+
+		return rest[:lastQuote]
 	}
 
-	return rest[:lastQuote]
+	// Handle numeric values (size, count, dll)
+	end := strings.IndexAny(rest, ",}\n\r ")
+	if end < 0 {
+		end = len(rest)
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 // truncateStr memotong string ke panjang maksimal.
@@ -494,32 +558,41 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode) string {
 		b.WriteString("- ANALISIS kode yang ada\n")
 		b.WriteString("- BUAT rencana langkah-demi-langkah yang terstruktur\n")
 		b.WriteString("- JANGAN menulis atau mengubah file apapun\n")
+		b.WriteString("- JANGAN mengklaim sudah menulis file — kamu tidak bisa write di mode ini\n")
 		b.WriteString("- Akhiri dengan Final Answer: berisi rencana yang jelas\n\n")
 
 	case modeEdit:
 		b.WriteString("Kamu adalah AI asisten dalam MODE EDIT. ")
 		b.WriteString("Tugasmu adalah mengimplementasikan perubahan secara LANGSUNG. ")
 		b.WriteString("Jangan bertanya — langsung kerjakan.\n\n")
-		b.WriteString("ATURAN PENTING:\n")
-		b.WriteString("- TULIS file dengan write_file untuk membuat/mengubah\n")
-		b.WriteString("- BACA file yang perlu diubah dengan read_file\n")
-		b.WriteString("- IMPLEMENTASIKAN perubahan yang diminta sekarang juga\n")
-		b.WriteString("- Akhiri dengan Final Answer: konfirmasi apa yang sudah diubah\n\n")
+		b.WriteString("ATURAN KRITIS:\n")
+		b.WriteString("- WAJIB pakai write_file untuk SETIAP perubahan file\n")
+		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah diubah\" tanpa Action: write_file\n")
+		b.WriteString("- BACA file dulu dengan read_file sebelum mengubahnya\n")
+		b.WriteString("- Format: Action: write_file({\"path\": \"...\", \"content\": \"...\"})\n")
+		b.WriteString("- Akhiri dengan Final Answer: konfirmasi apa yang SUDAH diubah via tool\n\n")
 
 	case modeAuto:
 		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM. ")
 		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user. ")
 		b.WriteString("Rencanakan sendiri langkah-langkahnya dan eksekusi berurutan.\n\n")
-		b.WriteString("ATURAN PENTING:\n")
+		b.WriteString("ATURAN KRITIS:\n")
+		b.WriteString("- WAJIB gunakan tools (read_file, write_file, list_files) untuk setiap aksi\n")
+		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah dibuat/diubah\" tanpa Action: write_file\n")
 		b.WriteString("- Gunakan tools secara otonom dan berurutan\n")
 		b.WriteString("- Eksekusi multi-step tanpa bertanya ke user\n")
-		b.WriteString("- Laporkan progress di setiap langkah\n")
 		b.WriteString("- Jika gagal di satu langkah, coba alternatif lain\n")
-		b.WriteString("- Akhiri dengan Final Answer: ringkasan apa yang sudah dikerjakan\n\n")
+		b.WriteString("- Akhiri dengan Final Answer: ringkasan apa yang SUDAH dikerjakan via tools\n\n")
 
 	default:
-		b.WriteString("Kamu adalah AI asisten yang membantu menjawab pertanyaan ")
-		b.WriteString("dan menyelesaikan tugas.\n\n")
+		b.WriteString("Kamu adalah AI asisten dalam MODE CHAT (percakapan normal). ")
+		b.WriteString("Bantu jawab pertanyaan, analisis kode, dan diskusi.\n\n")
+		b.WriteString("ATURAN PENTING:\n")
+		b.WriteString("- Kamu HANYA bisa membaca file (read_file, list_files)\n")
+		b.WriteString("- Kamu TIDAK BISA menulis/mengubah file di mode ini\n")
+		b.WriteString("- Jika user minta mengubah/membuat file, SARANKAN mereka switch ke mode /edit atau /auto\n")
+		b.WriteString("- Contoh: \"Untuk menulis file, silakan switch ke mode /edit atau /auto dengan Shift+Tab\"\n")
+		b.WriteString("- JANGAN coba-coba pakai write_file — itu tidak akan berfungsi\n\n")
 	}
 
 	if len(toolList) > 0 {

@@ -22,7 +22,11 @@ func (m model) View() tea.View {
 	rendered := m.renderFull()
 	v := tea.NewView(rendered)
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeAllMotion
+	if m.mouseEnabled {
+		v.MouseMode = tea.MouseModeCellMotion
+	} else {
+		v.MouseMode = tea.MouseModeNone
+	}
 	return v
 }
 
@@ -59,20 +63,31 @@ func (m *model) renderFull() string {
 	vp := m.viewport.View()
 
 	var status string
-	switch m.state {
-	case stateThinking:
-		if m.statusMsg != "" {
-			status = fmt.Sprintf(" ⏳ %s", m.statusMsg)
-		} else {
-			status = " ⏳ Thinking..."
+	if m.toolActivity != "" {
+		// Activity replaces Ready indicator
+		status = " " + m.toolActivity
+	} else {
+		switch m.state {
+		case stateThinking:
+			if m.statusMsg != "" {
+				status = " " + m.statusMsg
+			} else {
+				status = " Thinking..."
+			}
+		case stateReady:
+			if len(m.messages) > 0 {
+				status = fmt.Sprintf(" Ready  |  ~%d total tokens  |  %d messages",
+					m.totalTokens, len(m.messages))
+			} else {
+				status = " Ready — ketik pesan untuk memulai"
+			}
 		}
-	case stateReady:
-		if len(m.messages) > 0 {
-			status = fmt.Sprintf(" ✓ Ready  |  ~%d total tokens  |  %d messages",
-				m.totalTokens, len(m.messages))
-		} else {
-			status = " ✓ Ready — ketik pesan untuk memulai"
-		}
+	}
+	// Mouse mode indicator
+	var mouseHint string
+	if m.mouseEnabled {
+		mouseHint = dimStyle.Render(" mouse on (Ctrl+E)")
+		status += mouseHint
 	}
 	statusW := lipgloss.Width(status)
 	if m.width > statusW {
@@ -88,7 +103,7 @@ func (m *model) renderFull() string {
 	input := m.textarea.View()
 	bottom := input
 	if sug != "" {
-		bottom = lipgloss.JoinVertical(lipgloss.Left, sug, input)
+		bottom = lipgloss.JoinVertical(lipgloss.Left, sug, bottom)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -106,13 +121,20 @@ func (m *model) renderFull() string {
 // ---------------------------------------------------------------------------
 
 func (m *model) buildConversation() string {
-	if len(m.messages) == 0 {
-		return welcomeMessage(m.provider, m.modelName)
-	}
-
+	// Lebar untuk pesan biasa (dengan indentasi)
 	contentWidth := m.width - 6
 	if contentWidth < 40 {
 		contentWidth = 40
+	}
+
+	// Lebar untuk welcome box = lebar viewport (tanpa indentasi)
+	boxWidth := m.width
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+
+	if len(m.messages) == 0 {
+		return welcomeMessage(m.provider, m.modelName, boxWidth)
 	}
 
 	var sb strings.Builder
@@ -122,7 +144,7 @@ func (m *model) buildConversation() string {
 		case "user":
 			sb.WriteString(userPromptStyle.Render("▸ "))
 			sb.WriteString(lipgloss.NewStyle().
-				Width(contentWidth).
+				MaxWidth(contentWidth).
 				Render(msg.content))
 
 		case "assistant":
@@ -138,10 +160,10 @@ func (m *model) buildConversation() string {
 			sb.WriteString(separatorStyle.Render(strings.Repeat("─", contentWidth)))
 
 		case "tool":
-			sb.WriteString(toolStyle().Render("🔧 " + msg.content))
+			sb.WriteString(toolStyle().Render("" + msg.content))
 
 		case "tool-error":
-			sb.WriteString(toolErrorStyle().Render("🔧✗ " + msg.content))
+			sb.WriteString(toolErrorStyle().Render("✗ " + msg.content))
 
 		case "system":
 			sb.WriteString(dimStyle.Render("ℹ " + msg.content))

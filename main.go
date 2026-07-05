@@ -47,7 +47,7 @@ func ensureConfig(path string) {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ Gagal membuat direktori config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "! Gagal membuat direktori config: %v\n", err)
 		return
 	}
 	defaultJSON := `{
@@ -64,7 +64,7 @@ func ensureConfig(path string) {
 }
 `
 	if err := os.WriteFile(path, []byte(defaultJSON), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ Gagal menulis config default: %v\n", err)
+		fmt.Fprintf(os.Stderr, "! Gagal menulis config default: %v\n", err)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "✓ Config dibuat di %s\n", path)
@@ -85,13 +85,13 @@ func main() {
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ Gagal membaca konfigurasi: %v\n", err)
+		fmt.Fprintf(os.Stderr, "! Gagal membaca konfigurasi: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Menggunakan konfigurasi default.\n\n")
 		cfg = DefaultConfig()
 	}
 
 	if err := cfg.Validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ Konfigurasi tidak valid: %v\n\n", err)
+		fmt.Fprintf(os.Stderr, "! Konfigurasi tidak valid: %v\n\n", err)
 		os.Exit(1)
 	}
 

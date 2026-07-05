@@ -3,17 +3,35 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	lipgloss "charm.land/lipgloss/v2"
 )
 
-func welcomeMessage(provider, modelName string) string {
+func welcomeMessage(provider, modelName string, width int) string {
+	if width < 20 {
+		width = 20
+	}
+
+	titleText := fmt.Sprintf("Ihand TUI %s", version)
+	modelText := fmt.Sprintf("%s / %s", provider, modelName)
+
+	// Dynamic border mengikuti lebar window
+	hLine := strings.Repeat("─", width-2)
+	topBorder := "╭" + hLine + "╮"
+	bottomBorder := "╰" + hLine + "╯"
+
+	// Teks di tengah
+	titleLine := "│" + centerText(titleText, width-2) + "│"
+	modelLine := "│" + centerText(modelText, width-2) + "│"
+
 	var sb strings.Builder
-	sb.WriteString(titleStyle().Render("╭────────────────────────────────────────────╮"))
+	sb.WriteString(titleStyle().Render(topBorder))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render(fmt.Sprintf("      Selamat datang di Ihand TUI v%s      ", version)))
+	sb.WriteString(titleStyle().Render(titleLine))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render(fmt.Sprintf("       %s / %s       ", provider, modelName)))
+	sb.WriteString(titleStyle().Render(modelLine))
 	sb.WriteString("\n")
-	sb.WriteString(titleStyle().Render("╰────────────────────────────────────────────╯"))
+	sb.WriteString(titleStyle().Render(bottomBorder))
 	sb.WriteString("\n\n")
 	sb.WriteString(dimStyle.Render("Mode:"))
 	sb.WriteString("\n")
@@ -39,6 +57,17 @@ func welcomeMessage(provider, modelName string) string {
 	sb.WriteString("\n\n")
 	sb.WriteString(dimStyle.Render("Tools: write_file, read_file, list_files"))
 	sb.WriteString("\n")
-	sb.WriteString(dimStyle.Render("Enter untuk kirim  ·  Ctrl+J untuk baris baru  ·  Ctrl+C untuk keluar"))
+	sb.WriteString(dimStyle.Render("Enter kirim  ·  Shift+Enter baris baru  ·  Ctrl+S copy all  ·  Ctrl+E mouse  ·  Ctrl+C keluar"))
 	return sb.String()
+}
+
+// centerText meratakan teks ke tengah dalam lebar tertentu.
+func centerText(text string, width int) string {
+	tw := lipgloss.Width(text)
+	if tw >= width {
+		return text
+	}
+	left := (width - tw) / 2
+	right := width - tw - left
+	return strings.Repeat(" ", left) + text + strings.Repeat(" ", right)
 }

@@ -15,7 +15,6 @@ var (
 	dimColor    = lipgloss.Color("243")
 	errColor    = lipgloss.Color("196")
 	titleColor  = lipgloss.Color("252")
-	statusBg    = lipgloss.Color("236")
 	userColor   = lipgloss.Color("39")
 
 	headerStyle = lipgloss.NewStyle().
@@ -45,8 +44,8 @@ var (
 			Bold(true)
 
 	statusStyle = lipgloss.NewStyle().
-			Background(statusBg).
-			Foreground(dimColor).
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("208")).
 			Padding(0, 1)
 
 	suggestionBoxStyle = lipgloss.NewStyle().
@@ -81,5 +80,12 @@ func toolErrorStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("196")).
 		Bold(true).
+		Padding(0, 1)
+}
+
+func toolActivityStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("252")).
 		Padding(0, 1)
 }

@@ -140,8 +140,12 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 		return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca file: %s"}`, err.Error())), nil
 	}
 
-	return json.RawMessage(fmt.Sprintf(`{"path": "%s", "size": %d, "content": %s}`,
-		params.Path, len(data), jsonEscape(string(data)))), nil
+	result, _ := json.Marshal(map[string]any{
+		"path":    params.Path,
+		"size":    len(data),
+		"content": string(data),
+	})
+	return json.RawMessage(result), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -271,11 +275,4 @@ func resolveSafePath(allowedDir, relPath string) (string, error) {
 	}
 
 	return absPath, nil
-}
-
-// jsonEscape meng-escape string untuk dimasukkan ke JSON.
-func jsonEscape(s string) string {
-	b, _ := json.Marshal(s)
-	// Hapus kutip pembuka dan penutup
-	return string(b[1 : len(b)-1])
 }

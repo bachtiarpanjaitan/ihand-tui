@@ -2,9 +2,19 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+// tickMsg is sent every 500ms to animate the status dots while thinking.
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 // ---------------------------------------------------------------------------
 // Bubble Tea interface
@@ -58,6 +68,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		cmds = append(cmds, m.textarea.Focus())
 
+	case tickMsg:
+		if m.state == stateThinking {
+			m.tickCount++
+			dots := strings.Repeat(".", (m.tickCount%4)+1)
+			m.statusMsg = "Memproses" + dots
+			cmds = append(cmds, tickCmd())
+		}
+
 	case tea.MouseWheelMsg:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
@@ -86,6 +104,21 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoTop()
 		return m, nil
 
+	case "ctrl+e":
+		m.mouseEnabled = !m.mouseEnabled
+		return m, nil
+
+	case "ctrl+s":
+		return m, copyConversation(&m)
+
+	case "shift+enter", "ctrl+j":
+		if m.state == stateThinking {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+
 	case "enter":
 		if m.state == stateThinking {
 			return m, nil
@@ -111,7 +144,9 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			tokens:  inputTokens,
 		})
 		m.state = stateThinking
-		m.statusMsg = "Memulai..."
+		m.statusMsg = ""
+		m.tickCount = 0
+		m.toolActivity = ""
 		m.textarea.Reset()
 		m.textarea.Blur()
 
@@ -121,15 +156,8 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		return m, tea.Batch(
 			startChatLoop(m.ai, m.ctx, m.session, input, m.memory, m.toolList, m.mode),
+			tickCmd(),
 		)
-
-	case "ctrl+j":
-		if m.state == stateThinking {
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
 
 	case "up", "down", "pgup", "pgdown", "home", "end":
 		m.suggestions = nil
