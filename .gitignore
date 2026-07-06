@@ -4,3 +4,4 @@ ihand-tui
 ihand
 dist/
 settings.json
+test/

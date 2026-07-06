@@ -28,6 +28,7 @@ const (
 	stateReady chatState = iota
 	stateThinking
 	stateConfirming
+	stateSelectingEffort
 )
 
 type chatMode int
@@ -81,6 +82,54 @@ func (m chatMode) Placeholder() string {
 		return "Apa yang ingin dikerjakan?..."
 	default:
 		return "Ketik pesan..."
+	}
+}
+
+type effortLevel int
+
+const (
+	effortLow    effortLevel = iota
+	effortMedium
+	effortHigh
+)
+
+func (e effortLevel) String() string {
+	switch e {
+	case effortLow:
+		return "Low"
+	case effortMedium:
+		return "Medium"
+	case effortHigh:
+		return "High"
+	default:
+		return "Medium"
+	}
+}
+
+func (e effortLevel) Color() string {
+	switch e {
+	case effortLow:
+		return "39" // cyan
+	case effortMedium:
+		return "214" // yellow
+	case effortHigh:
+		return "196" // red
+	default:
+		return "214"
+	}
+}
+
+// Tag returns a visual indicator for the effort level in the header.
+func (e effortLevel) Tag() string {
+	switch e {
+	case effortLow:
+		return "▸ Min"
+	case effortMedium:
+		return "▸▸ Med"
+	case effortHigh:
+		return "▸▸▸ Max"
+	default:
+		return "▸▸ Med"
 	}
 }
 
@@ -168,6 +217,8 @@ type model struct {
 
 	state       chatState
 	mode        chatMode
+	effort      effortLevel
+	tempEffort  effortLevel
 	statusMsg   string
 	toolActivity string // aktivitas tool terakhir (ditampilkan di atas input)
 	pendingTool      reActTool
@@ -239,6 +290,7 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		memory:     store,
 		state:        stateReady,
 		mode:         modeAuto,
+		effort:       effortMedium,
 		allowedDir:   allowedDir,
 		toolList:     toolList,
 		mouseEnabled: true,

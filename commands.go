@@ -20,6 +20,7 @@ var availableCommands = []slashCommand{
 	{name: "/plan", desc: "mode analisis & rencana (read-only)"},
 	{name: "/edit", desc: "mode implementasi & edit file"},
 	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
+	{name: "/effort", desc: "set AI thinking effort (low/med/high)"},
 	{name: "/self-update", desc: "update ke versi terbaru"},
 }
 
@@ -108,7 +109,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/help":
 		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom)\n" +
-			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan)\n" +
+			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan), /effort (set AI depth)\n" +
 			"Keys: Enter (kirim), Ctrl+J (baris baru), ↑↓ (scroll), Shift+Tab (ganti mode), Ctrl+L (scroll ke atas)"
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
@@ -122,6 +123,41 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	default:
+		// Check for /effort with arguments
+		if strings.HasPrefix(input, "/effort ") {
+			args := strings.TrimSpace(input[7:])
+			var newEffort effortLevel
+			switch strings.ToLower(args) {
+			case "low", "min":
+				newEffort = effortLow
+			case "medium", "med":
+				newEffort = effortMedium
+			case "high", "max":
+				newEffort = effortHigh
+			default:
+				m.messages = append(m.messages, chatMessage{
+					role:    "system",
+					content: fmt.Sprintf("! Level effort tidak valid: %s. Gunakan low, medium, atau high.", args),
+				})
+				m.textarea.Reset()
+				content := m.buildConversation()
+				m.viewport.SetContent(content)
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+			return m.switchEffort(newEffort)
+		}
+
+		if input == "/effort" {
+			m.state = stateSelectingEffort
+			m.tempEffort = m.effort
+			m.textarea.Reset()
+			m.textarea.Blur()
+			m.recalcLayout()
+			m.rebuildViewport()
+			return m, nil
+		}
+
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
 			content: fmt.Sprintf("! Perintah tidak dikenal: %s. Ketik /help untuk bantuan.", input),
@@ -144,6 +180,22 @@ func (m model) switchMode(newMode chatMode) (tea.Model, tea.Cmd) {
 
 	m.toolActivity = fmt.Sprintf("Mode: %s", newMode.String())
 	m.textarea.Reset()
+
+	content := m.buildConversation()
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
+	return m, nil
+}
+
+func (m model) switchEffort(newEffort effortLevel) (tea.Model, tea.Cmd) {
+	if m.effort == newEffort {
+		return m, nil
+	}
+	m.effort = newEffort
+
+	m.toolActivity = fmt.Sprintf("Effort disetel ke: %s", newEffort.String())
+	m.textarea.Reset()
+	m.recalcLayout()
 
 	content := m.buildConversation()
 	m.viewport.SetContent(content)

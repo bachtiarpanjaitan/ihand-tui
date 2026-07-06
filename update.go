@@ -100,6 +100,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 
+	case "esc":
+		if m.state == stateSelectingEffort {
+			m.state = stateReady
+			m.textarea.Focus()
+			m.recalcLayout()
+			m.rebuildViewport()
+			return m, nil
+		}
+		return m, nil
+
 	case "ctrl+c", "ctrl+d":
 		return m, tea.Quit
 
@@ -182,6 +192,12 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleConfirmDeny()
 		}
 
+		if m.state == stateSelectingEffort {
+			m.state = stateReady
+			m.textarea.Focus()
+			return m.switchEffort(m.tempEffort)
+		}
+
 		m.suggestions = nil
 		m.suggestionType = ""
 		m.selSugg = -1
@@ -218,11 +234,96 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 		return m, tea.Batch(
-			startChatLoop(m.ai, m.ctx, m.session, llmInput, m.memory, m.toolList, m.mode),
+			startChatLoop(m.ai, m.ctx, m.session, llmInput, m.memory, m.toolList, m.mode, m.effort),
 			tickCmd(),
 		)
 
-	case "up", "down", "pgup", "pgdown", "home", "end":
+	case "up", "left":
+		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
+		if m.state == stateSelectingEffort {
+			if m.tempEffort > effortLow {
+				m.tempEffort--
+			} else {
+				m.tempEffort = effortHigh
+			}
+			m.rebuildViewport()
+			return m, nil
+		}
+		if msg.String() == "up" {
+			m.suggestions = nil
+			m.suggestionType = ""
+			m.selSugg = -1
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+
+	case "down", "right", "tab":
+		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
+		if m.state == stateSelectingEffort {
+			if m.tempEffort < effortHigh {
+				m.tempEffort++
+			} else {
+				m.tempEffort = effortLow
+			}
+			m.rebuildViewport()
+			return m, nil
+		}
+		if msg.String() == "tab" {
+			if len(m.suggestions) > 0 {
+				m.selSugg = (m.selSugg + 1) % len(m.suggestions)
+				if m.suggestionType == "file" {
+					// Replace only the @query part, preserving text before and after
+					currentValue := m.textarea.Value()
+					before := currentValue[:m.fileQueryStart]
+					// Find the end of the @query (space, newline, or end of string)
+					afterAt := currentValue[m.fileQueryStart+1:]
+					spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
+					var after string
+					if spaceIdx >= 0 {
+						after = afterAt[spaceIdx:]
+					}
+					// Show only file/folder basename in textarea, store full path
+					fullPath := m.suggestions[m.selSugg]
+					displayName := filepath.Base(strings.TrimSuffix(fullPath, "/"))
+					// Preserve trailing slash for directories
+					if strings.HasSuffix(fullPath, "/") {
+						displayName += "/"
+					}
+					m.fileMentions[displayName] = fullPath
+					m.textarea.SetValue(before + "@" + displayName + after)
+				} else {
+					m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
+				}
+				m.textarea.CursorEnd()
+				return m, nil
+			}
+			return m, nil
+		}
+		if msg.String() == "down" {
+			m.suggestions = nil
+			m.suggestionType = ""
+			m.selSugg = -1
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+
+	case "pgup", "pgdown", "home", "end":
 		m.suggestions = nil
 		m.suggestionType = ""
 		m.selSugg = -1
@@ -242,54 +343,6 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.switchMode(modeChat)
 		}
 		return m, nil
-
-	case "tab":
-		// In confirming state, tab toggles between Allow/Deny
-		if m.state == stateConfirming {
-			m.confirmChoice = (m.confirmChoice + 1) % 2
-			m.rebuildViewport()
-			return m, nil
-		}
-		if len(m.suggestions) > 0 {
-			m.selSugg = (m.selSugg + 1) % len(m.suggestions)
-			if m.suggestionType == "file" {
-				// Replace only the @query part, preserving text before and after
-				currentValue := m.textarea.Value()
-				before := currentValue[:m.fileQueryStart]
-				// Find the end of the @query (space, newline, or end of string)
-				afterAt := currentValue[m.fileQueryStart+1:]
-				spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
-				var after string
-				if spaceIdx >= 0 {
-					after = afterAt[spaceIdx:]
-				}
-				// Show only file/folder basename in textarea, store full path
-				fullPath := m.suggestions[m.selSugg]
-				displayName := filepath.Base(strings.TrimSuffix(fullPath, "/"))
-				// Preserve trailing slash for directories
-				if strings.HasSuffix(fullPath, "/") {
-					displayName += "/"
-				}
-				m.fileMentions[displayName] = fullPath
-				m.textarea.SetValue(before + "@" + displayName + after)
-			} else {
-				m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
-			}
-			m.textarea.CursorEnd()
-			return m, nil
-		}
-		return m, nil
-
-	case "left", "right":
-		// In confirming state, left/right toggles between Allow/Deny
-		if m.state == stateConfirming {
-			m.confirmChoice = (m.confirmChoice + 1) % 2
-			m.rebuildViewport()
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		return m, cmd
 
 	default:
 		if m.state == stateThinking {
@@ -346,6 +399,7 @@ func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
 	m.state = stateThinking
 	m.pendingTool = reActTool{}
 	m.pendingToolResp = ""
+	m.recalcLayout()
 	m.rebuildViewport()
 	return m, tea.Batch(
 		continueChatLoop(m.ai, m.ctx, state),
@@ -374,6 +428,7 @@ func (m model) handleConfirmDeny() (tea.Model, tea.Cmd) {
 	m.state = stateThinking
 	m.pendingTool = reActTool{}
 	m.pendingToolResp = ""
+	m.recalcLayout()
 	m.rebuildViewport()
 	return m, tea.Batch(
 		continueChatLoop(m.ai, m.ctx, state),

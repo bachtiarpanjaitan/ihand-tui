@@ -32,7 +32,7 @@ var (
 // ---------------------------------------------------------------------------
 
 // startChatLoop initializes the ReAct loop and fires the first LLM call.
-func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode) tea.Cmd {
+func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode, effort effortLevel) tea.Cmd {
 	return func() tea.Msg {
 		llmProvider := ai.LLM()
 		if llmProvider == nil {
@@ -54,7 +54,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			}
 		}
 
-		systemPrompt := buildToolSystemPrompt(activeTools, mode)
+		systemPrompt := buildToolSystemPrompt(activeTools, mode, effort)
 
 		messages := []core.Message{
 			{Role: "system", Content: systemPrompt},
@@ -156,9 +156,17 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	return m.textarea.Focus(), true
 	}
 
-	maxIterations := 8
+	// Calculate max iterations based on effort level
+	maxIterations := 8 // default (medium)
 	if m.mode == modeAuto {
 		maxIterations = 16
+	}
+	
+	switch m.effort {
+	case effortLow:
+		maxIterations = 4
+	case effortHigh:
+		maxIterations = 24
 	}
 
 	// --- Tool call ---
@@ -181,6 +189,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					extractField(toolCall.input, "\"content\""),
 				),
 			})
+			m.recalcLayout()
 			m.rebuildViewport()
 			return m.textarea.Focus(), true
 		}
@@ -606,7 +615,7 @@ func executeToolCall(toolList []tools.Tool, call reActTool) string {
 	return string(output)
 }
 
-func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode) string {
+func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLevel) string {
 	var b strings.Builder
 
 	switch mode {
@@ -654,6 +663,20 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode) string {
 		b.WriteString("- Jika user minta mengubah/membuat file, SARANKAN mereka switch ke mode /edit atau /auto\n")
 		b.WriteString("- Contoh: \"Untuk menulis file, silakan switch ke mode /edit atau /auto dengan Shift+Tab\"\n")
 		b.WriteString("- JANGAN coba-coba pakai write_file — itu tidak akan berfungsi\n\n")
+	}
+	
+	// Inject effort instructions
+	switch effort {
+	case effortLow:
+		b.WriteString("INSTRUKSI EFFORT (LOW):\n")
+		b.WriteString("- Jawablah dengan SINGKAT, CEPAT, dan langsung ke inti permasalahan.\n")
+		b.WriteString("- Tidak perlu penjelasan panjang lebar atau elaborasi berlebihan.\n\n")
+	case effortHigh:
+		b.WriteString("INSTRUKSI EFFORT (HIGH):\n")
+		b.WriteString("- Berpikirlah secara MENDALAM. Analisis masalah dari berbagai sudut pandang.\n")
+		b.WriteString("- Jika menulis kode, pertimbangkan edge cases, performa, dan best practices.\n")
+		b.WriteString("- Berikan penjelasan yang sangat komprehensif, detail, dan menyeluruh.\n")
+		b.WriteString("- Eksplorasi berbagai alternatif solusi sebelum memutuskan yang terbaik.\n\n")
 	}
 
 	if len(toolList) > 0 {

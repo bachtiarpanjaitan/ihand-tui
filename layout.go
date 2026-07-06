@@ -6,7 +6,15 @@ func (m *model) recalcLayout() {
 	if len(m.suggestions) > 0 {
 		sugHeight = 1
 	}
-	vpHeight := m.height - fixedOverhead - sugHeight
+	
+	// Default textarea is around 3 lines tall, but our selector UI is 5 lines tall.
+	// Adjust overhead when rendering those custom UIs.
+	extraOverhead := 0
+	if m.state == stateSelectingEffort || m.state == stateConfirming {
+		extraOverhead = 2 // 5 lines instead of 3
+	}
+	
+	vpHeight := m.height - fixedOverhead - sugHeight - extraOverhead
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
