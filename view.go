@@ -36,19 +36,39 @@ func (m model) View() tea.View {
 
 func (m *model) renderFull() string {
 	modeTag := lipgloss.NewStyle().
+		Background(lipgloss.Color("234")).
 		Foreground(lipgloss.Color(m.mode.Color())).
 		Bold(true).
 		Padding(0, 1).
 		Render(m.mode.String())
 	effortTag := lipgloss.NewStyle().
+		Background(lipgloss.Color("234")).
 		Foreground(lipgloss.Color(m.effort.Color())).
 		Bold(true).
 		Padding(0, 1).
 		Render(m.effort.Tag())
 
+	// Team role tag (only shown when in modeTeam with an active agent)
+	var teamTag string
+	if m.mode == modeTeam && m.currentTeamRole != roleNone {
+		teamTag = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255")).
+			Background(lipgloss.Color(m.currentTeamRole.Color())).
+			Bold(true).
+			Padding(0, 1).
+			Render(m.currentTeamRole.String())
+	}
+
 	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI %s · %s/%s", version, m.provider, m.modelName))
-	headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, headerLeft)
-	sessionInfo := dimStyle.Render(fmt.Sprintf("Session: %s", m.session))
+	if teamTag != "" {
+		headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, teamTag, headerLeft)
+	} else {
+		headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, headerLeft)
+	}
+	sessionInfo := lipgloss.NewStyle().
+		Background(lipgloss.Color("234")).
+		Foreground(dimColor).
+		Render(fmt.Sprintf("Session: %s", m.session))
 	headerGap := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(sessionInfo) - 2
 	if headerGap < 1 {
 		headerGap = 1
@@ -69,18 +89,23 @@ func (m *model) renderFull() string {
 	vp := m.viewport.View()
 
 	var status string
-	if m.toolActivity != "" {
-		// Activity replaces Ready indicator
-		status = " " + m.toolActivity
+	if m.state == stateThinking {
+		// Minimal status during thinking — main indicator is in the chatbox area
+		if len(m.messages) > 0 {
+			status = fmt.Sprintf(" ~%d total tokens  |  %d messages",
+				m.totalTokens, len(m.messages))
+		} else {
+			status = ""
+		}
+		statusW := lipgloss.Width(status)
+		if m.width > statusW {
+			status = status + strings.Repeat(" ", m.width-statusW)
+		}
+		status = statusStyle.Render(status)
 	} else {
-		switch m.state {
-		case stateThinking:
-			if m.statusMsg != "" {
-				status = " " + m.statusMsg
-			} else {
-				status = " Thinking..."
-			}
-		case stateReady:
+		if m.toolActivity != "" {
+			status = " " + m.toolActivity
+		} else {
 			if len(m.messages) > 0 {
 				status = fmt.Sprintf(" Ready  |  ~%d total tokens  |  %d messages",
 					m.totalTokens, len(m.messages))
@@ -88,18 +113,16 @@ func (m *model) renderFull() string {
 				status = " Ready — ketik pesan untuk memulai"
 			}
 		}
+		// Mouse mode indicator
+		if m.mouseEnabled {
+			status += dimStyle.Render(" mouse on (Ctrl+E)")
+		}
+		statusW := lipgloss.Width(status)
+		if m.width > statusW {
+			status = status + strings.Repeat(" ", m.width-statusW)
+		}
+		status = statusStyle.Render(status)
 	}
-	// Mouse mode indicator
-	var mouseHint string
-	if m.mouseEnabled {
-		mouseHint = dimStyle.Render(" mouse on (Ctrl+E)")
-		status += mouseHint
-	}
-	statusW := lipgloss.Width(status)
-	if m.width > statusW {
-		status = status + strings.Repeat(" ", m.width-statusW)
-	}
-	status = statusStyle.Render(status)
 
 	var sug string
 	if len(m.suggestions) > 0 {
@@ -111,6 +134,8 @@ func (m *model) renderFull() string {
 		bottom = m.renderEffortSelector()
 	} else if m.state == stateConfirming {
 		bottom = m.renderConfirmPrompt()
+	} else if m.state == stateThinking {
+		bottom = m.renderThinkingIndicator()
 	} else {
 		input := m.textarea.View()
 		bottom = input
@@ -127,6 +152,49 @@ func (m *model) renderFull() string {
 		status,
 		bottom,
 	)
+}
+
+// ---------------------------------------------------------------------------
+// Thinking indicator (replaces chatbox while AI is working)
+// ---------------------------------------------------------------------------
+
+func (m *model) renderThinkingIndicator() string {
+	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
+
+	accentColor := lipgloss.Color("214")
+	if m.mode == modeTeam && m.currentTeamRole != roleNone {
+		accentColor = lipgloss.Color(m.currentTeamRole.Color())
+	}
+
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(accentColor).
+		Bold(true)
+
+	var label string
+	if m.mode == modeTeam && m.currentTeamRole != roleNone {
+		label = fmt.Sprintf("[%s] ", m.currentTeamRole.String())
+	}
+
+	var detail string
+	if m.toolActivity != "" {
+		detail = m.toolActivity
+	} else {
+		detail = "Memproses permintaan..."
+	}
+
+	line := fmt.Sprintf("  %s %s%s",
+		spinnerStyle.Render(spinner),
+		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(label),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(detail),
+	)
+
+	// Pad to full width and add empty lines to match textarea height
+	w := lipgloss.Width(line)
+	if m.width > w {
+		line = line + strings.Repeat(" ", m.width-w)
+	}
+	return line + "\n\n"
 }
 
 // ---------------------------------------------------------------------------

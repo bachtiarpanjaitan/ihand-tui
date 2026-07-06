@@ -42,6 +42,8 @@ func welcomeMessage(provider, modelName string, width int) string {
 	sb.WriteString(dimStyle.Render("  /edit  — implementasi & edit file"))
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  /auto  — otonom (multi-step otomatis)"))
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /team  — kolaborasi agen tim (Architect, Developer, Reviewer)"))
 	sb.WriteString("\n\n")
 	sb.WriteString(dimStyle.Render("Lainnya:"))
 	sb.WriteString("\n")

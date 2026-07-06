@@ -18,6 +18,7 @@ var (
 	userColor   = lipgloss.Color("39")
 
 	headerStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("234")).
 			Foreground(titleColor).
 			Bold(true).
 			Padding(0, 1)

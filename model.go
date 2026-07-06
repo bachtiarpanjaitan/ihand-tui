@@ -38,6 +38,7 @@ const (
 	modePlan
 	modeEdit
 	modeAuto
+	modeTeam
 )
 
 func (m chatMode) String() string {
@@ -50,6 +51,8 @@ func (m chatMode) String() string {
 		return "Edit"
 	case modeAuto:
 		return "Auto"
+	case modeTeam:
+		return "Team"
 	default:
 		return "Chat"
 	}
@@ -65,6 +68,8 @@ func (m chatMode) Color() string {
 		return "76"
 	case modeAuto:
 		return "196"
+	case modeTeam:
+		return "99" // Purple
 	default:
 		return "39"
 	}
@@ -80,8 +85,45 @@ func (m chatMode) Placeholder() string {
 		return "Apa yang ingin diubah?..."
 	case modeAuto:
 		return "Apa yang ingin dikerjakan?..."
+	case modeTeam:
+		return "Tugas kompleks apa yang ingin dikerjakan bersama tim?..."
 	default:
 		return "Ketik pesan..."
+	}
+}
+
+type teamRole int
+
+const (
+	roleNone teamRole = iota
+	roleArchitect
+	roleDeveloper
+	roleReviewer
+)
+
+func (r teamRole) String() string {
+	switch r {
+	case roleArchitect:
+		return "Architect"
+	case roleDeveloper:
+		return "Developer"
+	case roleReviewer:
+		return "Reviewer"
+	default:
+		return ""
+	}
+}
+
+func (r teamRole) Color() string {
+	switch r {
+	case roleArchitect:
+		return "99"  // Purple
+	case roleDeveloper:
+		return "76"  // Green
+	case roleReviewer:
+		return "214" // Yellow
+	default:
+		return "243" // Gray
 	}
 }
 
@@ -166,13 +208,15 @@ type toolCallMsg struct {
 
 // chatLoopState carries the ReAct loop state across async LLM calls.
 type chatLoopState struct {
-	session     string
-	messages    []core.Message
-	activeTools []tools.Tool
-	iteration   int
-	toolCalls   []toolCallRecord
-	totalTokens int
-	startTime   time.Time
+	session         string
+	messages        []core.Message
+	activeTools     []tools.Tool
+	iteration       int
+	toolCalls       []toolCallRecord
+	totalTokens     int
+	startTime       time.Time
+	teamRole        teamRole
+	reviewIteration int
 }
 
 // chatStepResultMsg is returned by each async LLM call step.
@@ -219,6 +263,7 @@ type model struct {
 	mode        chatMode
 	effort      effortLevel
 	tempEffort  effortLevel
+	currentTeamRole teamRole
 	statusMsg   string
 	toolActivity string // aktivitas tool terakhir (ditampilkan di atas input)
 	pendingTool      reActTool
@@ -289,12 +334,13 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		ctx:        context.Background(),
 		memory:     store,
 		state:        stateReady,
-		mode:         modeAuto,
-		effort:       effortMedium,
-		allowedDir:   allowedDir,
-		toolList:     toolList,
-		mouseEnabled: true,
-		selSugg:      -1,
-		fileMentions: make(map[string]string),
+		mode:            modeAuto,
+		effort:          effortMedium,
+		currentTeamRole: roleNone,
+		allowedDir:      allowedDir,
+		toolList:        toolList,
+		mouseEnabled:    true,
+		selSugg:         -1,
+		fileMentions:    make(map[string]string),
 	}
 }

@@ -75,7 +75,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateThinking {
 			m.tickCount++
 			dots := strings.Repeat(".", (m.tickCount%4)+1)
-			m.statusMsg = "Memproses" + dots
+			if m.mode == modeTeam && m.currentTeamRole != roleNone {
+				m.statusMsg = fmt.Sprintf("[%s] Memproses%s", m.currentTeamRole.String(), dots)
+			} else {
+				m.statusMsg = "Memproses" + dots
+			}
 			cmds = append(cmds, tickCmd())
 		}
 
@@ -232,6 +236,11 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			tokens:  inputTokens,
 		})
 		m.state = stateThinking
+		if m.mode == modeTeam {
+			m.currentTeamRole = roleArchitect
+		} else {
+			m.currentTeamRole = roleNone
+		}
 		m.statusMsg = ""
 		m.tickCount = 0
 		m.toolActivity = ""
@@ -351,6 +360,8 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case modeEdit:
 			return m.switchMode(modeAuto)
 		case modeAuto:
+			return m.switchMode(modeTeam)
+		case modeTeam:
 			return m.switchMode(modeChat)
 		}
 		return m, nil

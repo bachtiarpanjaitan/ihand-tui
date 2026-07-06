@@ -20,6 +20,7 @@ var availableCommands = []slashCommand{
 	{name: "/plan", desc: "mode analisis & rencana (read-only)"},
 	{name: "/edit", desc: "mode implementasi & edit file"},
 	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
+	{name: "/team", desc: "mode kolaborasi agen tim (Architect, Developer, Reviewer)"},
 	{name: "/effort", desc: "set AI thinking effort (low/med/high)"},
 	{name: "/self-update", desc: "update ke versi terbaru"},
 }
@@ -59,6 +60,9 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 
 	case "/auto":
 		return m.switchMode(modeAuto)
+
+	case "/team":
+		return m.switchMode(modeTeam)
 
 	case "/clear":
 		m.memory.Clear(m.ctx, m.session)
@@ -108,7 +112,7 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/help":
-		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom)\n" +
+		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom), /team (kolaborasi)\n" +
 			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan), /effort (set AI depth)\n" +
 			"Keys: Enter (kirim), Ctrl+J (baris baru), ↑↓ (scroll), Shift+Tab (ganti mode), Ctrl+L (scroll ke atas)"
 		m.messages = append(m.messages, chatMessage{

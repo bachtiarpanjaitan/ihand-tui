@@ -45,7 +45,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		history, _ := store.History(ctx, session)
 
 		activeTools := toolList
-		if mode == modePlan || mode == modeChat {
+		if mode == modePlan || mode == modeChat || mode == modeTeam {
 			activeTools = nil
 			for _, t := range toolList {
 				if t.Name() == "read_file" || t.Name() == "list_files" || t.Name() == "browse" {
@@ -54,7 +54,30 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			}
 		}
 
-		systemPrompt := buildToolSystemPrompt(activeTools, mode, effort)
+		var systemPrompt string
+		var currentRole teamRole
+		if mode == modeTeam {
+			currentRole = roleArchitect
+			systemPrompt = buildTeamSystemPrompt(roleArchitect, activeTools)
+		} else {
+			systemPrompt = buildToolSystemPrompt(activeTools, mode, effort)
+		}
+
+		// Auto-context: jika ini pesan pertama dalam sesi, sertakan struktur folder root
+		if len(history) <= 1 {
+			for _, t := range toolList {
+				if t.Name() == "list_files" {
+					out, err := t.Execute(ctx, []byte(`{"path": "."}`))
+					if err == nil {
+						systemPrompt += "\n\n--- KONTEKS OTOMATIS (Struktur Root Direktori) ---\n"
+						systemPrompt += "Berikut adalah struktur file dan folder di direktori saat ini:\n"
+						systemPrompt += string(out)
+						systemPrompt += "\n------------------------------------------------\n"
+					}
+					break
+				}
+			}
+		}
 
 		messages := []core.Message{
 			{Role: "system", Content: systemPrompt},
@@ -65,13 +88,15 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 
 		return chatStepResultMsg{
 			state: chatLoopState{
-				session:     session,
-				messages:    messages,
-				activeTools: activeTools,
-				iteration:   0,
-				toolCalls:   nil,
-				totalTokens: countTokens(input),
-				startTime:   time.Now(),
+				session:         session,
+				messages:        messages,
+				activeTools:     activeTools,
+				iteration:       0,
+				toolCalls:       nil,
+				totalTokens:     countTokens(input),
+				startTime:       time.Now(),
+				teamRole:        currentRole,
+				reviewIteration: 0,
 			},
 			response: resp,
 			err:      err,
@@ -112,6 +137,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	}
 
 	state := msg.state
+	m.currentTeamRole = state.teamRole
 	resp := msg.response
 	if resp == nil {
 		m.state = stateReady
@@ -136,6 +162,140 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	state.totalTokens += countTokens(resp.Content)
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
+
+	if m.mode == modeTeam && (isFinal || toolCall.name == "") {
+		outputContent := resp.Content
+		if isFinal {
+			outputContent = toolCall.output
+		}
+
+		// Save agent response to memory
+		m.memory.Append(m.ctx, state.session, core.Message{
+			Role: "assistant", Content: resp.Content,
+		})
+
+		switch state.teamRole {
+		case roleArchitect:
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: fmt.Sprintf("**[Architect]** membuat rencana:\n\n%s", outputContent),
+				tokens:  state.totalTokens,
+				timing:  time.Since(state.startTime),
+			})
+
+			// Transition to Developer
+			state.teamRole = roleDeveloper
+			state.activeTools = m.toolList // Developer gets full tools
+			newPrompt := buildTeamSystemPrompt(roleDeveloper, m.toolList)
+			state.messages[0].Content = newPrompt
+
+			state.messages = append(state.messages,
+				core.Message{Role: "assistant", Content: resp.Content},
+				core.Message{Role: "user", Content: fmt.Sprintf("Architect telah membuat rencana. Developer, silakan implementasikan rencana berikut:\n%s", outputContent)},
+			)
+			state.iteration = 0
+			state.startTime = time.Now()
+			m.currentTeamRole = roleDeveloper
+			m.toolActivity = "[Developer] Mulai implementasi..."
+			m.rebuildViewport()
+
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, state),
+			), false
+
+		case roleDeveloper:
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: fmt.Sprintf("**[Developer]** menyelesaikan tugas:\n\n%s", outputContent),
+				tokens:  state.totalTokens,
+				timing:  time.Since(state.startTime),
+			})
+
+			// Transition to Reviewer
+			state.teamRole = roleReviewer
+			roTools := getReadOnlyTools(m.toolList)
+			state.activeTools = roTools
+			newPrompt := buildTeamSystemPrompt(roleReviewer, roTools)
+			state.messages[0].Content = newPrompt
+
+			state.messages = append(state.messages,
+				core.Message{Role: "assistant", Content: resp.Content},
+				core.Message{Role: "user", Content: "Developer telah selesai mengimplementasikan kode. Reviewer, silakan review dan tentukan APPROVED atau REJECTED."},
+			)
+			state.iteration = 0
+			state.startTime = time.Now()
+			m.currentTeamRole = roleReviewer
+			m.toolActivity = "[Reviewer] Memeriksa perubahan..."
+			m.rebuildViewport()
+
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, state),
+			), false
+
+		case roleReviewer:
+			lowerAns := strings.ToLower(outputContent)
+			isApproved := strings.Contains(lowerAns, "approved") || strings.Contains(lowerAns, "setuju")
+			isRejected := strings.Contains(lowerAns, "rejected") || strings.Contains(lowerAns, "tolak") || strings.Contains(lowerAns, "perbaiki")
+
+			if !isApproved && !isRejected {
+				isApproved = true // default fallback
+			}
+
+			if isApproved || state.reviewIteration >= 2 {
+				var contentText string
+				if isApproved {
+					contentText = fmt.Sprintf("**[Reviewer APPROVED]**:\n\n%s", outputContent)
+				} else {
+					contentText = fmt.Sprintf("**[Reviewer REJECTED - Limit Terlampaui]**:\n\n%s", outputContent)
+				}
+				m.messages = append(m.messages, chatMessage{
+					role:    "assistant",
+					content: contentText,
+					tokens:  state.totalTokens,
+					timing:  time.Since(state.startTime),
+				})
+				m.state = stateReady
+				m.currentTeamRole = roleNone
+				m.toolActivity = "✓ Selesai"
+				m.totalTokens += state.totalTokens
+				m.rebuildViewport()
+				m.statusMsg = ""
+				return m.textarea.Focus(), true
+			}
+
+			// If rejected and iteration < 2
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: fmt.Sprintf("**[Reviewer REJECTED]**:\n\n%s", outputContent),
+				tokens:  state.totalTokens,
+				timing:  time.Since(state.startTime),
+			})
+
+			// Transition back to Developer
+			state.teamRole = roleDeveloper
+			state.activeTools = m.toolList
+			newPrompt := buildTeamSystemPrompt(roleDeveloper, m.toolList)
+			state.messages[0].Content = newPrompt
+
+			state.messages = append(state.messages,
+				core.Message{Role: "assistant", Content: resp.Content},
+				core.Message{Role: "user", Content: fmt.Sprintf("Reviewer menolak implementasi sebelumnya dengan feedback berikut:\n%s\n\nDeveloper, silakan perbaiki kode sesuai feedback tersebut.", outputContent)},
+			)
+			state.iteration = 0
+			state.startTime = time.Now()
+			state.reviewIteration++
+			m.currentTeamRole = roleDeveloper
+			m.toolActivity = "[Developer] Memperbaiki kode..."
+			m.rebuildViewport()
+
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, state),
+			), false
+		}
+	}
 
 	// --- Final answer ---
 	if isFinal {
@@ -378,12 +538,17 @@ func formatToolDisplay(toolName, input, output string) string {
 			}
 			if success || strings.Contains(output, "berhasil") {
 				if previewDiff != "" {
-					return fmt.Sprintf("%s \u2014 %d baris", path, size) + previewDiff
+					return fmt.Sprintf("%s \u2014 %d baris\n", path, size) + previewDiff
 				}
 				// Fallback: content preview (jika diff kosong)
 				c := extractField(input, `"content"`)
 				preview := ""
 				if c != "" {
+					// Coba unmarshal json string untuk menangani newline, jika gagal gunakan raw
+					var unmarshaled string
+					if err := json.Unmarshal([]byte(`"`+c+`"`), &unmarshaled); err == nil {
+						c = unmarshaled
+					}
 					if len(c) > 500 {
 						preview = "\n" + c[:500] + "..."
 					} else {
@@ -688,4 +853,62 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 
 	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk Final Answer.")
 	return b.String()
+}
+
+func buildTeamSystemPrompt(role teamRole, toolList []tools.Tool) string {
+	var b strings.Builder
+	switch role {
+	case roleArchitect:
+		b.WriteString("Kamu adalah ARCHITECT dalam tim agen AI kolaboratif.\n")
+		b.WriteString("Tugasmu adalah menganalisis permintaan user, memeriksa codebase yang ada, dan merumuskan rencana implementasi yang matang.\n\n")
+		b.WriteString("ATURAN:\n")
+		b.WriteString("- Gunakan read_file, list_files, atau browse untuk memahami kode.\n")
+		b.WriteString("- Jangan mencoba menulis atau mengedit file (write_file tidak tersedia untukmu).\n")
+		b.WriteString("- Buatlah rencana yang sangat terperinci dan jelaskan file mana saja yang perlu dibuat/diubah.\n")
+		b.WriteString("- Akhiri tugasmu dengan menulis Final Answer: berisi rencana implementasi yang siap diberikan kepada Developer.\n")
+	case roleDeveloper:
+		b.WriteString("Kamu adalah DEVELOPER dalam tim agen AI kolaboratif.\n")
+		b.WriteString("Tugasmu adalah merealisasikan rencana implementasi yang dibuat oleh Architect.\n\n")
+		b.WriteString("ATURAN:\n")
+		b.WriteString("- Gunakan write_file untuk menulis atau mengedit file.\n")
+		b.WriteString("- Gunakan read_file untuk membaca file jika diperlukan.\n")
+		b.WriteString("- Tulis kode yang rapi, lengkap, dan fungsional.\n")
+		b.WriteString("- Jangan berasumsi file sudah diubah tanpa memanggil write_file.\n")
+		b.WriteString("- Setelah selesai melakukan semua perubahan kode, akhiri dengan Final Answer: berisi ringkasan file-file yang telah kamu ubah/buat beserta detail perubahannya agar bisa direview.\n")
+	case roleReviewer:
+		b.WriteString("Kamu adalah REVIEWER/TESTER dalam tim agen AI kolaboratif.\n")
+		b.WriteString("Tugasmu adalah memeriksa hasil pekerjaan Developer untuk memastikan bahwa kodenya benar, sesuai rencana Architect, dan bebas bug.\n\n")
+		b.WriteString("ATURAN:\n")
+		b.WriteString("- Baca file yang diubah oleh Developer menggunakan read_file.\n")
+		b.WriteString("- Evaluasi kode secara kritis (cek logika, error handling, edge cases).\n")
+		b.WriteString("- Jika kode sudah benar dan sesuai, akhiri dengan menulis Final Answer yang dimulai dengan kata 'APPROVED:'. Contoh: 'APPROVED: Kode sudah sesuai...'\n")
+		b.WriteString("- Jika ada bug, kesalahan, atau ketidaksesuaian rencana, akhiri dengan menulis Final Answer yang dimulai dengan kata 'REJECTED:'. Berikan feedback detail tentang apa yang perlu diperbaiki. Contoh: 'REJECTED: Di file main.go, fungsi X belum ditambahkan...'\n")
+	}
+
+	if len(toolList) > 0 {
+		b.WriteString("\nFORMAT MEMANGGIL TOOLS:\n")
+		b.WriteString("Action: nama_tool({\"key\": \"value\"})\n\n")
+		b.WriteString("FORMAT JAWABAN AKHIR:\n")
+		b.WriteString("Final Answer: jawaban akhir Anda\n\n")
+		b.WriteString("Tools yang tersedia untuk peranmu saat ini:\n")
+		for _, t := range toolList {
+			schema, _ := json.Marshal(t.InputSchema())
+			b.WriteString(fmt.Sprintf("- %s: %s\n  Schema: %s\n\n", t.Name(), t.Description(), string(schema)))
+		}
+	} else {
+		b.WriteString("\nTidak ada tools yang tersedia. Jawab langsung dengan Final Answer.\n\n")
+	}
+
+	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk komunikasi antar tim dan Final Answer.")
+	return b.String()
+}
+
+func getReadOnlyTools(allTools []tools.Tool) []tools.Tool {
+	var ro []tools.Tool
+	for _, t := range allTools {
+		if t.Name() == "read_file" || t.Name() == "list_files" || t.Name() == "browse" {
+			ro = append(ro, t)
+		}
+	}
+	return ro
 }

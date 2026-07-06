@@ -349,11 +349,7 @@ func computeDiff(oldContent, newContent string) string {
 		start = totalLines - 100
 	}
 	for k := len(stack) - 1; k >= start; k-- {
-		line := stack[k]
-		// Escape karakter khusus JSON
-		line = strings.ReplaceAll(line, "\\", "\\\\")
-		line = strings.ReplaceAll(line, "\"", "\\\"")
-		diffLines = append(diffLines, line)
+		diffLines = append(diffLines, stack[k])
 	}
 
 	if totalLines > 100 {
