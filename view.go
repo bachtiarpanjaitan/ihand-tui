@@ -214,6 +214,26 @@ func (m *model) renderConfirmPrompt(data string) string {
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 	dimValue := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 
+	// Option button styles
+	btnActiveAllow := lipgloss.NewStyle().
+		Background(lipgloss.Color("34")).
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Padding(0, 2)
+	btnInactiveAllow := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("76")).
+		Padding(0, 2)
+	btnActiveDeny := lipgloss.NewStyle().
+		Background(lipgloss.Color("196")).
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Padding(0, 2)
+	btnInactiveDeny := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("196")).
+		Padding(0, 2)
+
 	var icon string
 	switch toolName {
 	case "write_file":
@@ -276,11 +296,19 @@ func (m *model) renderConfirmPrompt(data string) string {
 	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
 	sb.WriteString("\n")
 
-	// Action hint
-	hint := fmt.Sprintf(" %s", hintStyle.Render("Allow?  (y) Yes  (n) No  lalu Enter"))
+	// Option buttons instead of y/n hint
+	var allowBtn, denyBtn string
+	if m.confirmChoice == 0 {
+		allowBtn = btnActiveAllow.Render("✓ Allow")
+		denyBtn = btnInactiveDeny.Render("✗ Deny")
+	} else {
+		allowBtn = btnInactiveAllow.Render("✓ Allow")
+		denyBtn = btnActiveDeny.Render("✗ Deny")
+	}
+	buttons := fmt.Sprintf(" %s  %s  %s", allowBtn, denyBtn, hintStyle.Render("Tab/←→ pilih · Enter konfirmasi"))
 	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(hint)
-	padding = innerWidth - lipgloss.Width(hint)
+	sb.WriteString(buttons)
+	padding = innerWidth - lipgloss.Width(buttons)
 	if padding > 0 {
 		sb.WriteString(strings.Repeat(" ", padding))
 	}

@@ -179,6 +179,9 @@ type model struct {
 	fileQueryStart  int    // posisi karakter '@' di input untuk replace
 	selSugg         int
 
+	fileMentions  map[string]string // @display → full relative path
+	confirmChoice int               // 0 = Allow, 1 = Deny (option selector)
+
 	mouseEnabled bool // toggle mouse capture (for text selection)
 	tickCount    int  // animation counter for status dots
 
@@ -240,5 +243,6 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		toolList:     toolList,
 		mouseEnabled: true,
 		selSugg:      -1,
+		fileMentions: make(map[string]string),
 	}
 }

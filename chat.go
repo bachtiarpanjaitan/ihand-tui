@@ -169,6 +169,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			m.pendingState = state
 			m.pendingToolResp = resp.Content
 			m.state = stateConfirming
+			m.confirmChoice = 0 // default to Allow
 			m.statusMsg = ""
 			m.toolActivity = fmt.Sprintf("🔍 Konfirmasi: %s", toolCall.name)
 			m.messages = append(m.messages, chatMessage{

@@ -153,3 +153,16 @@ func copyConversation(m *model) tea.Cmd {
 		return nil
 	}
 }
+
+// resolveFileMentions replaces @displayName with the full relative path in the input text.
+// mentions maps display name (without @) to full relative path.
+func resolveFileMentions(input string, mentions map[string]string) string {
+	if len(mentions) == 0 {
+		return input
+	}
+	result := input
+	for display, fullPath := range mentions {
+		result = strings.ReplaceAll(result, "@"+display, fullPath)
+	}
+	return result
+}

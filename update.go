@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -121,22 +122,64 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
 
+	case "y":
+		if m.state == stateConfirming {
+			return m.handleConfirmApprove()
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		// Recalculate suggestions after typing
+		fileSugs, atPos := computeFileSuggestions(m.textarea.Value(), m.allowedDir)
+		if len(fileSugs) > 0 {
+			m.suggestions = fileSugs
+			m.suggestionType = "file"
+			m.fileQueryStart = atPos
+			m.selSugg = 0
+		} else {
+			m.suggestions = computeSuggestions(m.textarea.Value())
+			m.suggestionType = "command"
+			if len(m.suggestions) > 0 {
+				m.selSugg = 0
+			} else {
+				m.selSugg = -1
+			}
+		}
+		return m, cmd
+
+	case "n":
+		if m.state == stateConfirming {
+			return m.handleConfirmDeny()
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		fileSugs, atPos := computeFileSuggestions(m.textarea.Value(), m.allowedDir)
+		if len(fileSugs) > 0 {
+			m.suggestions = fileSugs
+			m.suggestionType = "file"
+			m.fileQueryStart = atPos
+			m.selSugg = 0
+		} else {
+			m.suggestions = computeSuggestions(m.textarea.Value())
+			m.suggestionType = "command"
+			if len(m.suggestions) > 0 {
+				m.selSugg = 0
+			} else {
+				m.selSugg = -1
+			}
+		}
+		return m, cmd
+
 	case "enter":
 		if m.state == stateThinking {
 			return m, nil
 		}
 
-		// Handle y/n di state confirming
+		// Handle confirmation via option selector
 		if m.state == stateConfirming {
-			input := strings.TrimSpace(m.textarea.Value())
-			m.textarea.Reset()
-			if input == "y" || input == "Y" || input == "yes" {
+			if m.confirmChoice == 0 {
 				return m.handleConfirmApprove()
 			}
-			if input == "n" || input == "N" || input == "no" {
-				return m.handleConfirmDeny()
-			}
-			return m, nil
+			return m.handleConfirmDeny()
 		}
 
 		m.suggestions = nil
@@ -152,7 +195,10 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleCommand(input)
 		}
 
-		inputTokens := countTokens(input)
+		// Resolve @mentions: replace display names with full paths
+		llmInput := resolveFileMentions(input, m.fileMentions)
+
+		inputTokens := countTokens(llmInput)
 		m.messages = append(m.messages, chatMessage{
 			role:    "user",
 			content: input,
@@ -164,13 +210,15 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.toolActivity = ""
 		m.textarea.Reset()
 		m.textarea.Blur()
+		// Clear file mentions after sending
+		m.fileMentions = make(map[string]string)
 
 		content := m.buildConversation()
 		m.viewport.SetContent(content)
 		m.viewport.GotoBottom()
 
 		return m, tea.Batch(
-			startChatLoop(m.ai, m.ctx, m.session, input, m.memory, m.toolList, m.mode),
+			startChatLoop(m.ai, m.ctx, m.session, llmInput, m.memory, m.toolList, m.mode),
 			tickCmd(),
 		)
 
@@ -196,6 +244,12 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
+		// In confirming state, tab toggles between Allow/Deny
+		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
 		if len(m.suggestions) > 0 {
 			m.selSugg = (m.selSugg + 1) % len(m.suggestions)
 			if m.suggestionType == "file" {
@@ -209,7 +263,15 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				if spaceIdx >= 0 {
 					after = afterAt[spaceIdx:]
 				}
-				m.textarea.SetValue(before + "@" + m.suggestions[m.selSugg] + after)
+				// Show only file/folder basename in textarea, store full path
+				fullPath := m.suggestions[m.selSugg]
+				displayName := filepath.Base(strings.TrimSuffix(fullPath, "/"))
+				// Preserve trailing slash for directories
+				if strings.HasSuffix(fullPath, "/") {
+					displayName += "/"
+				}
+				m.fileMentions[displayName] = fullPath
+				m.textarea.SetValue(before + "@" + displayName + after)
 			} else {
 				m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
 			}
@@ -217,6 +279,17 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
+
+	case "left", "right":
+		// In confirming state, left/right toggles between Allow/Deny
+		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
 
 	default:
 		if m.state == stateThinking {
