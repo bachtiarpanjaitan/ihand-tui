@@ -198,6 +198,17 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.switchEffort(m.tempEffort)
 		}
 
+		if m.selSugg >= 0 && len(m.suggestions) > 0 {
+			if m.suggestionType == "command" {
+				cmdStr := m.suggestions[m.selSugg]
+				m.suggestions = nil
+				m.suggestionType = ""
+				m.selSugg = -1
+				m.textarea.Reset()
+				return m.handleCommand(cmdStr)
+			}
+		}
+
 		m.suggestions = nil
 		m.suggestionType = ""
 		m.selSugg = -1
@@ -303,10 +314,10 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 					m.fileMentions[displayName] = fullPath
 					m.textarea.SetValue(before + "@" + displayName + after)
+					m.textarea.CursorEnd()
 				} else {
-					m.textarea.SetValue(m.suggestions[m.selSugg] + " ")
+					// For commands, just cycle the selection, do not fill the textarea
 				}
-				m.textarea.CursorEnd()
 				return m, nil
 			}
 			return m, nil

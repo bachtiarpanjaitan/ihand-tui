@@ -51,6 +51,8 @@ func welcomeMessage(provider, modelName string, width int) string {
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  /stats  — statistik session"))
 	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  /effort  — atur kedalaman AI"))
+	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  /self-update  — update ke versi terbaru"))
 	sb.WriteString("\n")
 	sb.WriteString(dimStyle.Render("  /help   — bantuan"))

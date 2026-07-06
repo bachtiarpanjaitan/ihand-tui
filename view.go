@@ -45,8 +45,8 @@ func (m *model) renderFull() string {
 		Bold(true).
 		Padding(0, 1).
 		Render(m.effort.Tag())
-		
-	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI v%s · %s/%s", version, m.provider, m.modelName))
+
+	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI %s · %s/%s", version, m.provider, m.modelName))
 	headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, headerLeft)
 	sessionInfo := dimStyle.Render(fmt.Sprintf("Session: %s", m.session))
 	headerGap := m.width - lipgloss.Width(headerLeft) - lipgloss.Width(sessionInfo) - 2
@@ -272,8 +272,6 @@ func (m *model) renderConfirmPrompt() string {
 	sb.WriteString(borderStyle.Render("\u2502"))
 	sb.WriteString("\n")
 
-
-
 	// Empty line separator
 	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
 	sb.WriteString("\n")
@@ -328,7 +326,7 @@ func (m *model) renderEffortSelector() string {
 		Background(lipgloss.Color("236")).
 		Foreground(lipgloss.Color("39")).
 		Padding(0, 2)
-		
+
 	btnActiveMed := lipgloss.NewStyle().
 		Background(lipgloss.Color("214")).
 		Foreground(lipgloss.Color("255")).
@@ -338,7 +336,7 @@ func (m *model) renderEffortSelector() string {
 		Background(lipgloss.Color("236")).
 		Foreground(lipgloss.Color("214")).
 		Padding(0, 2)
-		
+
 	btnActiveHigh := lipgloss.NewStyle().
 		Background(lipgloss.Color("196")).
 		Foreground(lipgloss.Color("255")).
@@ -365,7 +363,7 @@ func (m *model) renderEffortSelector() string {
 	}
 	sb.WriteString(borderStyle.Render("\u2502"))
 	sb.WriteString("\n")
-	
+
 	// Empty line separator
 	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
 	sb.WriteString("\n")
@@ -377,19 +375,19 @@ func (m *model) renderEffortSelector() string {
 	} else {
 		lowBtn = btnInactiveLow.Render("Low")
 	}
-	
+
 	if m.tempEffort == effortMedium {
 		medBtn = btnActiveMed.Render("Medium")
 	} else {
 		medBtn = btnInactiveMed.Render("Medium")
 	}
-	
+
 	if m.tempEffort == effortHigh {
 		highBtn = btnActiveHigh.Render("High")
 	} else {
 		highBtn = btnInactiveHigh.Render("High")
 	}
-	
+
 	buttons := fmt.Sprintf(" %s  %s  %s  %s", lowBtn, medBtn, highBtn, hintStyle.Render("←→ pilih · Enter konfirmasi · Esc batal"))
 	sb.WriteString(borderStyle.Render("\u2502"))
 	sb.WriteString(buttons)
