@@ -180,15 +180,6 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			m.confirmChoice = 0 // default to Allow
 			m.statusMsg = ""
 			m.toolActivity = fmt.Sprintf("🔍 Konfirmasi: %s", toolCall.name)
-			m.messages = append(m.messages, chatMessage{
-				role:    "confirm",
-				content: fmt.Sprintf(
-					"%s|%s|%s",
-					toolCall.name,
-					extractField(toolCall.input, "\"path\""),
-					extractField(toolCall.input, "\"content\""),
-				),
-			})
 			m.recalcLayout()
 			m.rebuildViewport()
 			return m.textarea.Focus(), true

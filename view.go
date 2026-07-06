@@ -109,6 +109,8 @@ func (m *model) renderFull() string {
 	var bottom string
 	if m.state == stateSelectingEffort {
 		bottom = m.renderEffortSelector()
+	} else if m.state == stateConfirming {
+		bottom = m.renderConfirmPrompt()
 	} else {
 		input := m.textarea.View()
 		bottom = input
@@ -183,9 +185,6 @@ func (m *model) buildConversation() string {
 		case "system":
 			sb.WriteString(dimStyle.Render("ℹ " + msg.content))
 
-		case "confirm":
-			sb.WriteString(m.renderConfirmPrompt(msg.content))
-
 		case "error":
 			sb.WriteString(errorStyle.Render("✗ " + msg.content))
 		}
@@ -199,20 +198,11 @@ func (m *model) buildConversation() string {
 	return sb.String()
 }
 
-func (m *model) renderConfirmPrompt(data string) string {
-	// Format: "toolName|path|content"
-	parts := strings.SplitN(data, "|", 3)
-	if len(parts) < 2 {
-		return ""
-	}
-	toolName := parts[0]
-	path := parts[1]
-	content := ""
-	if len(parts) > 2 {
-		content = parts[2]
-	}
+func (m *model) renderConfirmPrompt() string {
+	toolName := m.pendingTool.name
+	path := extractField(m.pendingTool.input, "\"path\"")
 
-	boxWidth := m.width - 10
+	boxWidth := m.width
 	if boxWidth < 40 {
 		boxWidth = 40
 	}
@@ -223,7 +213,6 @@ func (m *model) renderConfirmPrompt(data string) string {
 	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
-	dimValue := lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 
 	// Option button styles
 	btnActiveAllow := lipgloss.NewStyle().
@@ -283,25 +272,7 @@ func (m *model) renderConfirmPrompt(data string) string {
 	sb.WriteString(borderStyle.Render("\u2502"))
 	sb.WriteString("\n")
 
-	// Content preview untuk write_file
-	if toolName == "write_file" && content != "" {
-		preview := content
-		if len(preview) > 100 {
-			preview = preview[:100] + "..."
-		}
-		// Escape newlines for single-line display
-		preview = strings.ReplaceAll(preview, "\n", "\\n")
-		preview = strings.ReplaceAll(preview, "\r", "")
-		contentText := fmt.Sprintf(" %s %s", labelStyle.Render("Content:"), dimValue.Render(preview))
-		sb.WriteString(borderStyle.Render("\u2502"))
-		sb.WriteString(contentText)
-		padding = innerWidth - lipgloss.Width(contentText)
-		if padding > 0 {
-			sb.WriteString(strings.Repeat(" ", padding))
-		}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-	}
+
 
 	// Empty line separator
 	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
