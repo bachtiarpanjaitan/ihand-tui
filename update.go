@@ -30,6 +30,47 @@ func (m model) Init() tea.Cmd {
 	)
 }
 
+func formatStreamForDisplay(content string) string {
+	s := strings.ReplaceAll(content, "Thought:", "**Pemikiran:**")
+	
+	// Format Action Input:
+	if strings.Contains(s, "Action Input:") {
+		s = strings.ReplaceAll(s, "Action Input:", "\n**Parameter:**\n```json\n")
+		s += "\n```"
+	}
+
+	// Format Action: tool({...})
+	// We can't use regex easily on incomplete stream, but we can detect if it looks like a function call
+	if strings.Contains(s, "Action:") {
+		// If Action: is followed by a function call pattern
+		if strings.Contains(s, "({") {
+			s = strings.ReplaceAll(s, "Action:", "\n**Memanggil Tool:**\n```json\n")
+			s += "\n```"
+		} else {
+			s = strings.ReplaceAll(s, "Action:", "\n**Memanggil Tool:**")
+		}
+	}
+	
+	// Unescape common JSON escapes globally so code inside JSON looks like code during stream.
+	// Gemini sometimes double-escapes backslashes in JSON, so we handle both \\n and \n.
+	s = strings.ReplaceAll(s, "\\\\n", "\n")
+	s = strings.ReplaceAll(s, "\\n", "\n")
+	s = strings.ReplaceAll(s, "\\\\t", "\t")
+	s = strings.ReplaceAll(s, "\\t", "\t")
+	s = strings.ReplaceAll(s, "\\\\\"", "\"")
+	s = strings.ReplaceAll(s, "\\\"", "\"")
+
+	// If it contains Final Answer, we can highlight it
+	s = strings.ReplaceAll(s, "Final Answer:", "**Jawaban:**\n")
+	
+	// Format into markdown if we see a code block inside the JSON, we can trick glamour by
+	// replacing the JSON keys if they appear.
+	s = strings.ReplaceAll(s, "\"code\": \"", "\n```\n")
+	s = strings.ReplaceAll(s, "\"content\": \"", "\n```\n")
+	
+	return s
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -47,6 +88,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
+
+	case streamChunkMsg:
+		if m.streamStartTime.IsZero() {
+			m.streamStartTime = time.Now()
+			m.streamingContent = ""
+			// Add a placeholder message for the stream
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: "",
+				timing:  0,
+			})
+		}
+
+		if !msg.done {
+			m.streamingContent += msg.content
+			m.messages[len(m.messages)-1].content = formatStreamForDisplay(m.streamingContent)
+			m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
+			
+			// Throttle UI rendering to max ~20 FPS (50ms) to avoid lag
+			now := time.Now()
+			if now.Sub(m.lastStreamRender) > 50*time.Millisecond {
+				m.rebuildViewport()
+				m.lastStreamRender = now
+			}
+			return m, waitForStreamChunk(msg.ch, msg.state)
+		}
+
+		// Stream is done, finalize the response
+		finalResp := &core.Response{
+			Content: m.streamingContent,
+		}
+		
+		// Reset stream state
+		m.streamStartTime = time.Time{}
+		m.streamingContent = ""
+		
+		// Remove the placeholder message because processChatStep will add it again properly
+		// (or we could keep it and modify processChatStep, but it's cleaner to reuse processChatStep as is)
+		m.messages = m.messages[:len(m.messages)-1]
+
+		// Dispatch to the regular ReAct handler
+		return m, func() tea.Msg {
+			return chatStepResultMsg{
+				state:    msg.state,
+				response: finalResp,
+				err:      nil,
+			}
+		}
 
 	case chatStepResultMsg:
 		// Process one step of the ReAct loop. Each tool call, thinking step,

@@ -281,6 +281,11 @@ type model struct {
 	mouseEnabled bool // toggle mouse capture (for text selection)
 	tickCount    int  // animation counter for status dots
 
+	// Streaming state
+	streamingContent string    // accumulated text from stream chunks
+	streamStartTime  time.Time // when the current stream started
+	lastStreamRender time.Time // when the stream was last rendered to UI
+
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
 }

@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,11 +15,13 @@ import (
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
 )
 
-// Compile-time check: OpenAIChatCompleter implements llm.ChatCompleter.
+// Compile-time checks
 var _ llm.ChatCompleter = (*OpenAIChatCompleter)(nil)
+var _ llm.StreamCompleter = (*OpenAIChatCompleter)(nil)
 
-// OpenAIChatCompleter implements llm.ChatCompleter using the OpenAI chat API.
-// It works with any OpenAI-compatible provider (OpenAI, Groq, Together AI, etc.).
+// OpenAIChatCompleter implements llm.ChatCompleter and llm.StreamCompleter
+// using the OpenAI chat API. It works with any OpenAI-compatible provider
+// (OpenAI, Groq, Together AI, etc.).
 type OpenAIChatCompleter struct {
 	model      string
 	baseURL    string
@@ -58,6 +61,19 @@ type openAIChatResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *core.TokenUsage `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -125,6 +141,97 @@ func (c *OpenAIChatCompleter) Chat(ctx context.Context, messages []core.Message)
 		FinishReason: choice.FinishReason,
 		Usage:        result.Usage,
 	}, nil
+}
+
+// ChatStream sends a streaming chat completion request to the OpenAI-compatible API.
+// Returns a channel of llm.Chunk that will receive tokens as they arrive.
+func (c *OpenAIChatCompleter) ChatStream(ctx context.Context, messages []core.Message) (<-chan llm.Chunk, error) {
+	openaiMsgs := make([]openAIMessage, len(messages))
+	for i, m := range messages {
+		openaiMsgs[i] = openAIMessage{Role: m.Role, Content: m.Content}
+	}
+
+	reqBody := openAIChatRequest{
+		Model:    c.model,
+		Messages: openaiMsgs,
+		Stream:   true,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("openai: marshal request: %w", err)
+	}
+
+	url := c.baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("openai: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("openai: request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("openai: HTTP %d", resp.StatusCode)
+	}
+
+	ch := make(chan llm.Chunk)
+
+	go func() {
+		defer resp.Body.Close()
+		defer close(ch)
+
+		scanner := bufio.NewScanner(resp.Body)
+		// Increase buffer for large streamed chunks
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+			if line == "" || line == "data: [DONE]" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			var chunk openAIStreamChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+
+			if chunk.Error != nil {
+				return
+			}
+
+			if len(chunk.Choices) > 0 {
+				choice := chunk.Choices[0]
+				var fr string
+				if choice.FinishReason != nil {
+					fr = *choice.FinishReason
+				}
+				if choice.Delta.Content != "" || fr != "" {
+					ch <- llm.Chunk{
+						Content:      choice.Delta.Content,
+						FinishReason: fr,
+					}
+				}
+			}
+		}
+	}()
+
+	return ch, nil
 }
 
 // init registers the OpenAI chat provider in the ihandai registry.

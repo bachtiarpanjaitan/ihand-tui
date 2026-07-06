@@ -10,6 +10,7 @@ import (
 
 	"github.com/bachtiarpanjaitan/ihandai-go"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/core"
+	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/memory"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/tools"
 
@@ -31,11 +32,39 @@ var (
 // Step-based chat loop (replaces makeToolChatCall)
 // ---------------------------------------------------------------------------
 
+// streamChunkMsg carries a single text token from the LLM stream.
+type streamChunkMsg struct {
+	state   chatLoopState
+	content string
+	done    bool // true when the stream is finished
+	ch      <-chan llm.Chunk
+}
+
+// waitForStreamChunk reads the next chunk from a stream channel and returns it
+// as a Bubble Tea message. When the channel closes, it returns done=true.
+func waitForStreamChunk(ch <-chan llm.Chunk, state chatLoopState) tea.Cmd {
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return streamChunkMsg{state: state, done: true, ch: ch}
+		}
+		return streamChunkMsg{
+			state:   state,
+			content: chunk.Content,
+			done:    chunk.FinishReason != "",
+			ch:      ch,
+		}
+	}
+}
+
+
 // startChatLoop initializes the ReAct loop and fires the first LLM call.
 func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode, effort effortLevel) tea.Cmd {
 	return func() tea.Msg {
 		llmProvider := ai.LLM()
-		if llmProvider == nil {
+		streamProvider := ai.StreamLLM()
+
+		if llmProvider == nil && streamProvider == nil {
 			return llmErrorMsg{err: fmt.Errorf("LLM provider tidak tersedia")}
 		}
 
@@ -84,20 +113,29 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		}
 		messages = append(messages, history...)
 
-		resp, err := llmProvider.Chat(ctx, messages)
+		initialState := chatLoopState{
+			session:         session,
+			messages:        messages,
+			activeTools:     activeTools,
+			iteration:       0,
+			toolCalls:       nil,
+			totalTokens:     countTokens(input),
+			startTime:       time.Now(),
+			teamRole:        currentRole,
+			reviewIteration: 0,
+		}
 
+		if streamProvider != nil {
+			ch, err := streamProvider.ChatStream(ctx, messages)
+			if err != nil {
+				return llmErrorMsg{err: err}
+			}
+			return waitForStreamChunk(ch, initialState)()
+		}
+
+		resp, err := llmProvider.Chat(ctx, messages)
 		return chatStepResultMsg{
-			state: chatLoopState{
-				session:         session,
-				messages:        messages,
-				activeTools:     activeTools,
-				iteration:       0,
-				toolCalls:       nil,
-				totalTokens:     countTokens(input),
-				startTime:       time.Now(),
-				teamRole:        currentRole,
-				reviewIteration: 0,
-			},
+			state:    initialState,
 			response: resp,
 			err:      err,
 		}
@@ -108,12 +146,21 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 func continueChatLoop(ai *ihandai.Client, ctx context.Context, state chatLoopState) tea.Cmd {
 	return func() tea.Msg {
 		llmProvider := ai.LLM()
-		if llmProvider == nil {
+		streamProvider := ai.StreamLLM()
+
+		if llmProvider == nil && streamProvider == nil {
 			return llmErrorMsg{err: fmt.Errorf("LLM provider tidak tersedia")}
 		}
 
-		resp, err := llmProvider.Chat(ctx, state.messages)
+		if streamProvider != nil {
+			ch, err := streamProvider.ChatStream(ctx, state.messages)
+			if err != nil {
+				return llmErrorMsg{err: err}
+			}
+			return waitForStreamChunk(ch, state)()
+		}
 
+		resp, err := llmProvider.Chat(ctx, state.messages)
 		return chatStepResultMsg{
 			state:    state,
 			response: resp,

@@ -234,15 +234,7 @@ func (m *model) buildConversation() string {
 			sb.WriteString(checkStyle.Render(info))
 			sb.WriteString("\n")
 			rendered := m.renderMarkdown(msg.content, contentWidth)
-			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" {
-					sb.WriteString("\n")
-					continue
-				}
-				sb.WriteString("  • " + line + "\n")
-			}
+			sb.WriteString(rendered)
 
 		case "tool":
 			sb.WriteString(toolStyle().Render("" + msg.content))
