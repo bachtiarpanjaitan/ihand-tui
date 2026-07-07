@@ -29,6 +29,7 @@ const (
 	stateThinking
 	stateConfirming
 	stateSelectingEffort
+	stateTrustPrompt
 )
 
 type chatMode int
@@ -117,9 +118,9 @@ func (r teamRole) String() string {
 func (r teamRole) Color() string {
 	switch r {
 	case roleArchitect:
-		return "99"  // Purple
+		return "99" // Purple
 	case roleDeveloper:
-		return "76"  // Green
+		return "76" // Green
 	case roleReviewer:
 		return "214" // Yellow
 	default:
@@ -130,7 +131,7 @@ func (r teamRole) Color() string {
 type effortLevel int
 
 const (
-	effortLow    effortLevel = iota
+	effortLow effortLevel = iota
 	effortMedium
 	effortHigh
 )
@@ -238,6 +239,14 @@ type reActTool struct {
 	output string
 }
 
+// earlyToolExec stores the result of a tool call executed during LLM streaming.
+type earlyToolExec struct {
+	toolName string
+	input    string
+	output   string
+	isError  bool
+}
+
 type model struct {
 	width  int
 	height int
@@ -259,17 +268,17 @@ type model struct {
 	allowedDir string
 	toolList   []tools.Tool
 
-	state       chatState
-	mode        chatMode
-	effort      effortLevel
-	tempEffort  effortLevel
+	state           chatState
+	mode            chatMode
+	effort          effortLevel
+	tempEffort      effortLevel
 	currentTeamRole teamRole
-	statusMsg   string
-	toolActivity string // aktivitas tool terakhir (ditampilkan di atas input)
-	pendingTool      reActTool
-	pendingState     chatLoopState
-	pendingToolResp  string
-	err         error
+	statusMsg       string
+	toolActivity    string // aktivitas tool terakhir (ditampilkan di atas input)
+	pendingTool     reActTool
+	pendingState    chatLoopState
+	pendingToolResp string
+	err             error
 	suggestions     []string
 	suggestionType  string // "command" atau "file"
 	fileQueryStart  int    // posisi karakter '@' di input untuk replace
@@ -277,14 +286,20 @@ type model struct {
 
 	fileMentions  map[string]string // @display → full relative path
 	confirmChoice int               // 0 = Allow, 1 = Deny (option selector)
+	trustWrite    bool              // setelah approve 1×, skip konfirmasi write_file & create_directory
+
+	// Trust prompt
+	trustConfirmed bool   // apakah user sudah konfirmasi trust untuk folder ini
+	allowedDirAbs  string // absolute path dari allowedDir (untuk trust checking)
 
 	mouseEnabled bool // toggle mouse capture (for text selection)
 	tickCount    int  // animation counter for status dots
 
 	// Streaming state
-	streamingContent string    // accumulated text from stream chunks
-	streamStartTime  time.Time // when the current stream started
-	lastStreamRender time.Time // when the stream was last rendered to UI
+	streamingContent string        // accumulated text from stream chunks
+	earlyTool        earlyToolExec // tool yang sudah dieksekusi saat streaming
+	streamStartTime  time.Time     // when the current stream started
+	lastStreamRender time.Time     // when the stream was last rendered to UI
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
@@ -317,12 +332,16 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 
 	ta.Focus()
 
+	mkdirTool := toolspkg.NewCreateDirTool(allowedDir)
 	writeTool := toolspkg.NewWriteFileTool(allowedDir)
 	readTool := toolspkg.NewReadFileTool(allowedDir)
 	listTool := toolspkg.NewListFilesTool(allowedDir)
 	browseTool := toolspkg.NewBrowseTool()
-	toolList := []tools.Tool{writeTool, readTool, listTool, browseTool}
-	ai.SetTools(writeTool, readTool, listTool, browseTool)
+	findFilesTool := toolspkg.NewFindFilesTool(allowedDir)
+	searchTextTool := toolspkg.NewSearchTextTool(allowedDir)
+	readFileLinesTool := toolspkg.NewReadFileLinesTool(allowedDir)
+	toolList := []tools.Tool{mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool}
+	ai.SetTools(mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool)
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
 	vp.SoftWrap = true
@@ -330,15 +349,15 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	vp.GotoTop()
 
 	return model{
-		viewport:   vp,
-		textarea:   ta,
-		session:    session,
-		provider:   provider,
-		modelName:  modelName,
-		ai:         ai,
-		ctx:        context.Background(),
-		memory:     store,
-		state:        stateReady,
+		viewport:        vp,
+		textarea:        ta,
+		session:         session,
+		provider:        provider,
+		modelName:       modelName,
+		ai:              ai,
+		ctx:             context.Background(),
+		memory:          store,
+		state:           stateReady,
 		mode:            modeAuto,
 		effort:          effortMedium,
 		currentTeamRole: roleNone,
@@ -347,5 +366,23 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		mouseEnabled:    true,
 		selSugg:         -1,
 		fileMentions:    make(map[string]string),
+		allowedDirAbs:   resolveAllowedDir(allowedDir),
 	}
+}
+
+func initModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir string) model {
+	m := initialModel(ai, store, provider, modelName, session, allowedDir)
+
+	// Check if this directory has been trusted before
+	absDir := m.allowedDirAbs
+	if isDirTrusted(absDir) {
+		m.trustConfirmed = true
+		m.trustWrite = true
+		m.state = stateReady
+	} else {
+		m.trustConfirmed = false
+		m.state = stateTrustPrompt
+	}
+
+	return m
 }

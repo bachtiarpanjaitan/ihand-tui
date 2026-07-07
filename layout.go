@@ -14,6 +14,8 @@ func (m *model) recalcLayout() {
 		extraOverhead = 2 // 5 lines instead of 3
 	} else if m.state == stateConfirming {
 		extraOverhead = 3 // 6 lines instead of 3
+	} else if m.state == stateTrustPrompt {
+		extraOverhead = 8 // ~11 lines instead of 3
 	}
 	
 	vpHeight := m.height - fixedOverhead - sugHeight - extraOverhead

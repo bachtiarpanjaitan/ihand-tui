@@ -274,7 +274,12 @@ func (c *AnthropicChatCompleter) ChatStream(ctx context.Context, messages []core
 					}
 				}
 			case "error":
-				// Stream error, stop processing
+				// Send error info as a content chunk before stopping
+				if event.Error != nil {
+					ch <- llm.Chunk{
+						Content: "[SSE Error: " + event.Error.Type + " - " + event.Error.Message + "]",
+					}
+				}
 				return
 			case "message_stop":
 				return

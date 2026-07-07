@@ -123,7 +123,7 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", cfg.LLM.Provider, cfg.LLM.Model)
 
-	m := initialModel(ai, store, cfg.LLM.Provider, cfg.LLM.Model, cfg.App.Session, allowedDir)
+	m := initModel(ai, store, cfg.LLM.Provider, cfg.LLM.Model, cfg.App.Session, allowedDir)
 
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/memory"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/tools"
+	toolspkg "test-ihandai/internal/tools"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -57,9 +58,8 @@ func waitForStreamChunk(ch <-chan llm.Chunk, state chatLoopState) tea.Cmd {
 	}
 }
 
-
 // startChatLoop initializes the ReAct loop and fires the first LLM call.
-func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode, effort effortLevel) tea.Cmd {
+func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input string, store memory.ConversationStore, toolList []tools.Tool, mode chatMode, effort effortLevel, allowedDir string) tea.Cmd {
 	return func() tea.Msg {
 		llmProvider := ai.LLM()
 		streamProvider := ai.StreamLLM()
@@ -74,10 +74,12 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		history, _ := store.History(ctx, session)
 
 		activeTools := toolList
-		if mode == modePlan || mode == modeChat || mode == modeTeam {
+		if mode == modePlan || mode == modeChat {
 			activeTools = nil
 			for _, t := range toolList {
-				if t.Name() == "read_file" || t.Name() == "list_files" || t.Name() == "browse" {
+				switch t.Name() {
+				case "read_file", "list_files", "browse",
+					"find_files", "search_text", "read_file_lines":
 					activeTools = append(activeTools, t)
 				}
 			}
@@ -92,7 +94,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			systemPrompt = buildToolSystemPrompt(activeTools, mode, effort)
 		}
 
-		// Auto-context: jika ini pesan pertama dalam sesi, sertakan struktur folder root
+		// Auto-context: jika ini pesan pertama dalam sesi, sertakan struktur folder + info ekstensi
 		if len(history) <= 1 {
 			for _, t := range toolList {
 				if t.Name() == "list_files" {
@@ -102,6 +104,26 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 						systemPrompt += "Berikut adalah struktur file dan folder di direktori saat ini:\n"
 						systemPrompt += string(out)
 						systemPrompt += "\n------------------------------------------------\n"
+					}
+					break
+				}
+			}
+			// Auto-detect extensions yang ada di project
+			for _, t := range toolList {
+				if t.Name() == "find_files" {
+					exts := toolspkg.DiscoverExtensions(allowedDir)
+					if len(exts) > 0 {
+						systemPrompt += "\n--- EKSTENSI FILE YANG TERDETEKSI ---\n"
+						systemPrompt += "Project ini memiliki file dengan ekstensi berikut:\n"
+						extStr := toolspkg.FormatExtensions(exts)
+						systemPrompt += extStr + "\n"
+						systemPrompt += "Gunakan ekstensi ini sebagai file_pattern di find_files/search_text.\n"
+						ext := exts[0].Extension
+						if len(ext) > 1 {
+							firstExt := ext[1:] // remove dot
+							systemPrompt += "Contoh: find_files({\"pattern\": \"*." + firstExt + "\"})\n"
+						}
+						systemPrompt += "------------------------------------------------\n"
 					}
 					break
 				}
@@ -206,7 +228,9 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.rebuildViewport()
 		return m.textarea.Focus(), true
 	}
-	state.totalTokens += countTokens(resp.Content)
+	respTokens := countTokens(resp.Content)
+	state.totalTokens += respTokens
+	m.totalTokens += respTokens // update UI counter live
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
 
@@ -360,7 +384,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.toolActivity = "✓ Selesai"
 		m.rebuildViewport()
 		m.statusMsg = ""
-	return m.textarea.Focus(), true
+		return m.textarea.Focus(), true
 	}
 
 	// Calculate max iterations based on effort level
@@ -368,7 +392,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	if m.mode == modeAuto {
 		maxIterations = 16
 	}
-	
+
 	switch m.effort {
 	case effortLow:
 		maxIterations = 4
@@ -380,16 +404,85 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	if toolCall.name != "" {
 		// Cek apakah tool butuh permission
 		if needsPermission(toolCall.name) {
-			m.pendingTool = toolCall
-			m.pendingState = state
-			m.pendingToolResp = resp.Content
-			m.state = stateConfirming
-			m.confirmChoice = 0 // default to Allow
-			m.statusMsg = ""
-			m.toolActivity = fmt.Sprintf("🔍 Konfirmasi: %s", toolCall.name)
-			m.recalcLayout()
-			m.rebuildViewport()
-			return m.textarea.Focus(), true
+			// Jika user sudah trust write, skip konfirmasi
+			if isToolAutoTrusted(m.mode, m.trustWrite, toolCall.name) {
+				var toolOutput string
+				var isToolError bool
+				if m.earlyTool.toolName == toolCall.name && m.earlyTool.input == toolCall.input {
+					toolOutput = m.earlyTool.output
+					isToolError = m.earlyTool.isError
+					m.earlyTool = earlyToolExec{} // reset
+				} else {
+					toolOutput = executeToolCall(state.activeTools, toolCall)
+					isToolError = strings.HasPrefix(toolOutput, "Error")
+					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+					role := "tool"
+					if isToolError {
+						role = "tool-error"
+					}
+					m.toolActivity = fmt.Sprintf("%s", toolCall.name)
+					m.messages = append(m.messages, chatMessage{
+						role:    role,
+						content: display,
+						tokens:  0,
+					})
+				}
+				state.toolCalls = append(state.toolCalls, toolCallRecord{
+					toolName: toolCall.name,
+					input:    toolCall.input,
+					output:   toolOutput,
+					isError:  isToolError,
+				})
+				state.messages = append(state.messages,
+					core.Message{Role: "assistant", Content: resp.Content},
+					core.Message{Role: "user", Content: fmt.Sprintf(
+						"Observation (hasil dari tool %s): %s", toolCall.name, toolOutput,
+					)},
+				)
+				state.iteration++
+
+				// Max iteration check — prevents fall-through to second execution
+				if state.iteration >= maxIterations {
+					finalContent := "! Agent mencapai batas maksimum iterasi."
+					for i := len(state.messages) - 1; i >= 0; i-- {
+						if state.messages[i].Role == "assistant" {
+							finalContent = state.messages[i].Content
+							break
+						}
+					}
+					_ = state.toolCalls
+					m.messages = append(m.messages, chatMessage{
+						role:    "assistant",
+						content: finalContent,
+						tokens:  state.totalTokens,
+						timing:  time.Since(state.startTime),
+					})
+					m.state = stateReady
+					m.totalTokens += state.totalTokens
+					m.toolActivity = "\u2713 Selesai"
+					m.rebuildViewport()
+					m.statusMsg = ""
+					return m.textarea.Focus(), true
+				}
+
+				// Continue the ReAct loop — return early to prevent double execution
+				m.rebuildViewport()
+				return tea.Batch(
+					m.textarea.Focus(),
+					continueChatLoop(m.ai, m.ctx, state),
+				), false
+			} else {
+				m.pendingTool = toolCall
+				m.pendingState = state
+				m.pendingToolResp = resp.Content
+				m.state = stateConfirming
+				m.confirmChoice = 0 // default to Allow
+				m.statusMsg = ""
+				m.toolActivity = fmt.Sprintf("🔍 Konfirmasi: %s", toolCall.name)
+				m.recalcLayout()
+				m.rebuildViewport()
+				return m.textarea.Focus(), true
+			}
 		}
 
 		toolOutput := executeToolCall(state.activeTools, toolCall)
@@ -448,7 +541,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			m.toolActivity = "✓ Selesai"
 			m.rebuildViewport()
 			m.statusMsg = ""
-	return m.textarea.Focus(), true
+			return m.textarea.Focus(), true
 		}
 
 		// Update UI and continue loop
@@ -472,7 +565,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	m.state = stateReady
 	m.totalTokens += state.totalTokens
 
-		m.toolActivity = "✓ Selesai"
+	m.toolActivity = "✓ Selesai"
 	m.rebuildViewport()
 	m.statusMsg = ""
 	return m.textarea.Focus(), true
@@ -481,7 +574,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 // needsPermission returns true jika tool memerlukan konfirmasi user sebelum dieksekusi.
 func needsPermission(name string) bool {
 	switch name {
-	case "write_file", "read_file":
+	case "write_file", "read_file", "create_directory":
 		return true
 	default:
 		return false
@@ -541,6 +634,34 @@ func formatToolDisplay(toolName, input, output string) string {
 	fmt.Sscanf(countStr, "%d", &count)
 
 	switch toolName {
+	case "create_directory":
+		if path != "" {
+			return fmt.Sprintf("%s — Direktori dibuat", path)
+		}
+	case "find_files":
+		countStr := extractField(output, `"count"`)
+		count := 0
+		fmt.Sscanf(countStr, "%d", &count)
+		totalStr := extractField(output, `"total"`)
+		total := 0
+		fmt.Sscanf(totalStr, "%d", &total)
+		truncated := strings.Contains(output, `"truncated": true`)
+		if truncated {
+			return fmt.Sprintf("Ditemukan %d file (total %d, ditampilkan sebagian)", count, total)
+		}
+		return fmt.Sprintf("Ditemukan %d file", count)
+	case "search_text":
+		countStr := extractField(output, `"count"`)
+		count := 0
+		fmt.Sscanf(countStr, "%d", &count)
+		return fmt.Sprintf("Pencarian teks — %d hasil", count)
+	case "read_file_lines":
+		path := extractField(output, `"path"`)
+		startLine := extractField(output, `"start_line"`)
+		endLine := extractField(output, `"end_line"`)
+		if path != "" {
+			return fmt.Sprintf("%s: baris %s-%s", path, startLine, endLine)
+		}
 	case "read_file":
 		if path != "" {
 			// Show content preview from output
@@ -565,7 +686,7 @@ func formatToolDisplay(toolName, input, output string) string {
 			if diffStr != "" {
 				// Decode JSON string, lalu split
 				var diffText string
-				if err := json.Unmarshal([]byte(`"` + diffStr + `"`), &diffText); err == nil && diffText != "" {
+				if err := json.Unmarshal([]byte(`"`+diffStr+`"`), &diffText); err == nil && diffText != "" {
 					diffLines := strings.Split(diffText, "\n")
 					var b strings.Builder
 					for _, line := range diffLines {
@@ -745,18 +866,31 @@ func truncateStr(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-func parseReActResponse(text string) (reActTool, bool) {
-	if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
-		return reActTool{output: strings.TrimSpace(m[1])}, true
-	}
+// cleanToolName strips markdown formatting from a tool name (e.g. "**read_file**" → "read_file").
+func cleanToolName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimPrefix(name, "**")
+	name = strings.TrimSuffix(name, "**")
+	name = strings.TrimPrefix(name, "__")
+	name = strings.TrimSuffix(name, "__")
+	name = strings.TrimPrefix(name, "*")
+	name = strings.TrimSuffix(name, "*")
+	name = strings.TrimPrefix(name, "_")
+	name = strings.TrimSuffix(name, "_")
+	name = strings.TrimPrefix(name, "`")
+	name = strings.TrimSuffix(name, "`")
+	return strings.TrimSpace(name)
+}
 
-	// Periksa Action: format dulu — lebih robust untuk JSON dengan nested braces
+func parseReActResponse(text string) (reActTool, bool) {
+	// Periksa Action: format dulu — cari tool call SEBELUM Final Answer
+	// agar tool call tidak terlewat jika LLM menyertakan keduanya dalam satu respons.
 	if m := actionRe.FindStringSubmatch(text); len(m) > 1 {
 		actionStr := strings.TrimSpace(m[1])
 
 		parenIdx := strings.Index(actionStr, "(")
 		if parenIdx > 0 {
-			name := strings.TrimSpace(actionStr[:parenIdx])
+			name := cleanToolName(actionStr[:parenIdx])
 			inputStr := actionStr[parenIdx+1:]
 
 			// Gunakan bracket counting untuk handle JSON dengan nested {} di dalam string
@@ -774,13 +908,18 @@ func parseReActResponse(text string) (reActTool, bool) {
 	// Fallback: toolCallRe — hanya untuk format tanpa "Action:" prefix
 	if m := toolCallRe.FindStringSubmatch(text); len(m) > 2 {
 		return reActTool{
-			name:  strings.TrimSpace(m[1]),
+			name:  cleanToolName(m[1]),
 			input: strings.TrimSpace(m[2]),
 		}, false
 	}
 
 	if m := inputRe.FindStringSubmatch(text); len(m) > 1 {
 		return reActTool{input: strings.TrimSpace(m[1])}, false
+	}
+
+	// Final Answer — checked AFTER tool calls so tool calls take priority
+	if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
+		return reActTool{output: strings.TrimSpace(m[1])}, true
 	}
 
 	return reActTool{}, false
@@ -795,7 +934,7 @@ func executeToolCall(toolList []tools.Tool, call reActTool) string {
 		}
 	}
 	if tool == nil {
-		return fmt.Sprintf("Error: tool %q tidak dikenal. Tools tersedia: write_file, read_file, list_files", call.name)
+		return fmt.Sprintf("Error: tool %q tidak dikenal. Tools tersedia: write_file, read_file, list_files, create_directory, browse, find_files, search_text, read_file_lines", call.name)
 	}
 
 	input := json.RawMessage(call.input)
@@ -827,7 +966,7 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("Tugasmu adalah menganalisis, membaca file yang relevan, ")
 		b.WriteString("dan membuat rencana detail SEBELUM implementasi.\n\n")
 		b.WriteString("ATURAN PENTING:\n")
-		b.WriteString("- BACA file yang relevan dengan read_file atau list_files\n")
+		b.WriteString("- BACA file yang relevan dengan read_file, list_files, find_files, atau search_text\n")
 		b.WriteString("- ANALISIS kode yang ada\n")
 		b.WriteString("- BUAT rencana langkah-demi-langkah yang terstruktur\n")
 		b.WriteString("- JANGAN menulis atau mengubah file apapun\n")
@@ -843,6 +982,12 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah diubah\" tanpa Action: write_file\n")
 		b.WriteString("- BACA file dulu dengan read_file sebelum mengubahnya\n")
 		b.WriteString("- Format: Action: write_file({\"path\": \"...\", \"content\": \"...\"})\n")
+		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap seperti cmd/api/handler.go\n")
+		b.WriteString("- Gunakan create_directory jika ingin membuat folder kosong terlebih dahulu\n")
+		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis SEMUA file di root direktori (path langsung, tanpa subfolder project_name/)\n")
+		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
+		b.WriteString("- Jika user minta project di folder tertentu: buat folder dulu, lalu tulis file di dalamnya\n")
+		b.WriteString("  Contoh: create_directory({\"path\": \"myproject\"}) lalu write_file({\"path\": \"myproject/main.go\", \"content\": \"...\"})\n")
 		b.WriteString("- Akhiri dengan Final Answer: konfirmasi apa yang SUDAH diubah via tool\n\n")
 
 	case modeAuto:
@@ -850,8 +995,15 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user. ")
 		b.WriteString("Rencanakan sendiri langkah-langkahnya dan eksekusi berurutan.\n\n")
 		b.WriteString("ATURAN KRITIS:\n")
-		b.WriteString("- WAJIB gunakan tools (read_file, write_file, list_files) untuk setiap aksi\n")
+		b.WriteString("- WAJIB gunakan tools (read_file, write_file, list_files, create_directory) untuk setiap aksi\n")
 		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah dibuat/diubah\" tanpa Action: write_file\n")
+		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap\n")
+		b.WriteString("- Gunakan create_directory untuk membuat folder eksplisit (opsional, karena write_file auto-create)\n")
+		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis SEMUA file di root direktori (path tanpa subfolder)\n")
+		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
+		b.WriteString("  JANGAN buat subfolder project_name/ — cukup tulis file langsung di root.\n")
+		b.WriteString("- Jika user minta project di folder tertentu, gunakan path relatif dari root.\n")
+		b.WriteString("  Contoh: write_file({\"path\": \"myproject/main.go\", \"content\": \"...\"})\n")
 		b.WriteString("- Gunakan tools secara otonom dan berurutan\n")
 		b.WriteString("- Eksekusi multi-step tanpa bertanya ke user\n")
 		b.WriteString("- Jika gagal di satu langkah, coba alternatif lain\n")
@@ -861,13 +1013,13 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("Kamu adalah AI asisten dalam MODE CHAT (percakapan normal). ")
 		b.WriteString("Bantu jawab pertanyaan, analisis kode, dan diskusi.\n\n")
 		b.WriteString("ATURAN PENTING:\n")
-		b.WriteString("- Kamu HANYA bisa membaca file (read_file, list_files)\n")
+		b.WriteString("- Kamu HANYA bisa membaca file (read_file, list_files, find_files, search_text, read_file_lines)\n")
 		b.WriteString("- Kamu TIDAK BISA menulis/mengubah file di mode ini\n")
 		b.WriteString("- Jika user minta mengubah/membuat file, SARANKAN mereka switch ke mode /edit atau /auto\n")
 		b.WriteString("- Contoh: \"Untuk menulis file, silakan switch ke mode /edit atau /auto dengan Shift+Tab\"\n")
 		b.WriteString("- JANGAN coba-coba pakai write_file — itu tidak akan berfungsi\n\n")
 	}
-	
+
 	// Inject effort instructions
 	switch effort {
 	case effortLow:
@@ -918,9 +1070,13 @@ func buildTeamSystemPrompt(role teamRole, toolList []tools.Tool) string {
 		b.WriteString("Tugasmu adalah merealisasikan rencana implementasi yang dibuat oleh Architect.\n\n")
 		b.WriteString("ATURAN:\n")
 		b.WriteString("- Gunakan write_file untuk menulis atau mengedit file.\n")
+		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap.\n")
+		b.WriteString("- Gunakan create_directory untuk membuat folder secara eksplisit (opsional).\n")
 		b.WriteString("- Gunakan read_file untuk membaca file jika diperlukan.\n")
 		b.WriteString("- Tulis kode yang rapi, lengkap, dan fungsional.\n")
 		b.WriteString("- Jangan berasumsi file sudah diubah tanpa memanggil write_file.\n")
+		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis file langsung di root direktori (jangan buat subfolder project_name/)\n")
+		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
 		b.WriteString("- Setelah selesai melakukan semua perubahan kode, akhiri dengan Final Answer: berisi ringkasan file-file yang telah kamu ubah/buat beserta detail perubahannya agar bisa direview.\n")
 	case roleReviewer:
 		b.WriteString("Kamu adalah REVIEWER/TESTER dalam tim agen AI kolaboratif.\n")
@@ -953,9 +1109,27 @@ func buildTeamSystemPrompt(role teamRole, toolList []tools.Tool) string {
 func getReadOnlyTools(allTools []tools.Tool) []tools.Tool {
 	var ro []tools.Tool
 	for _, t := range allTools {
-		if t.Name() == "read_file" || t.Name() == "list_files" || t.Name() == "browse" {
+		switch t.Name() {
+		case "read_file", "list_files", "browse",
+			"find_files", "search_text", "read_file_lines":
 			ro = append(ro, t)
 		}
 	}
 	return ro
+}
+
+// isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
+func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
+	if toolName != "write_file" && toolName != "create_directory" {
+		return false
+	}
+	return mode == modeAuto || mode == modeEdit || mode == modeTeam || trustWrite
+}
+
+// isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
+func isToolAutoTrustedMode(mode chatMode, toolName string) bool {
+	if toolName != "write_file" && toolName != "create_directory" {
+		return false
+	}
+	return mode == modeAuto || mode == modeEdit || mode == modeTeam
 }

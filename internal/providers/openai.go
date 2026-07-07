@@ -212,6 +212,9 @@ func (c *OpenAIChatCompleter) ChatStream(ctx context.Context, messages []core.Me
 			}
 
 			if chunk.Error != nil {
+				ch <- llm.Chunk{
+					Content: "[API Error: " + chunk.Error.Message + "]",
+				}
 				return
 			}
 

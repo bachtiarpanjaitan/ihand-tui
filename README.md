@@ -64,7 +64,7 @@ ihand ~/projects
 
 ## Konfigurasi Provider
 
-### OpenAI
+### OpenAI Compatible
 
 ```json
 {

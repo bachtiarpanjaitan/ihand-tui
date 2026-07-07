@@ -136,6 +136,8 @@ func (m *model) renderFull() string {
 		bottom = m.renderConfirmPrompt()
 	} else if m.state == stateThinking {
 		bottom = m.renderThinkingIndicator()
+	} else if m.state == stateTrustPrompt {
+		bottom = m.renderTrustPrompt()
 	} else {
 		input := m.textarea.View()
 		bottom = input
@@ -357,6 +359,118 @@ func (m *model) renderConfirmPrompt() string {
 
 	// Bottom border
 	sb.WriteString(borderStyle.Render("\u2514" + strings.Repeat("\u2500", innerWidth) + "\u2518"))
+
+	return sb.String()
+}
+
+// ---------------------------------------------------------------------------
+// Trust Prompt rendering
+// ---------------------------------------------------------------------------
+
+func (m *model) renderTrustPrompt() string {
+	boxWidth := m.width
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+	innerWidth := boxWidth - 2
+
+	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+
+	btnActive := lipgloss.NewStyle().
+		Background(lipgloss.Color("34")).
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Padding(0, 2)
+	btnInactive := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("76")).
+		Padding(0, 2)
+	btnActiveDeny := lipgloss.NewStyle().
+		Background(lipgloss.Color("196")).
+		Foreground(lipgloss.Color("255")).
+		Bold(true).
+		Padding(0, 2)
+	btnInactiveDeny := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("196")).
+		Padding(0, 2)
+
+	var sb strings.Builder
+
+	// Top border
+	sb.WriteString(borderStyle.Render("┌" + strings.Repeat("─", innerWidth) + "┐"))
+	sb.WriteString("\n")
+
+	// Title
+	title := fmt.Sprintf(" \U0001f512  %s  ", titleStyle.Render("Trust Directory?"))
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString(title)
+	padding := innerWidth - lipgloss.Width(title)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString("\n")
+
+	// Directory path
+	pathText := fmt.Sprintf(" %s %s", labelStyle.Render("Dir:"), valueStyle.Render(m.allowedDirAbs))
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString(pathText)
+	padding = innerWidth - lipgloss.Width(pathText)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString("\n")
+
+	// Empty line
+	sb.WriteString(borderStyle.Render("│" + strings.Repeat(" ", innerWidth) + "│"))
+	sb.WriteString("\n")
+
+	// Description lines
+	descLines := []string{
+		"Percayakan direktori ini?",
+		"Dengan percaya, mode auto/edit/team dapat langsung",
+		"menulis dan membuat file tanpa konfirmasi setiap kali.",
+		"Kamu bisa mengubahnya nanti dengan /trust.",
+	}
+	for _, line := range descLines {
+		lineRendered := "  " + line + strings.Repeat(" ", innerWidth-lipgloss.Width(line)-2)
+		sb.WriteString(borderStyle.Render("│"))
+		sb.WriteString(lineRendered)
+		sb.WriteString(borderStyle.Render("│"))
+		sb.WriteString("\n")
+	}
+
+	// Empty line
+	sb.WriteString(borderStyle.Render("│" + strings.Repeat(" ", innerWidth) + "│"))
+	sb.WriteString("\n")
+
+	// Buttons
+	var trustBtn, skipBtn string
+	if m.confirmChoice == 0 {
+		trustBtn = btnActive.Render("✓ Trust")
+		skipBtn = btnInactiveDeny.Render("✗ Skip")
+	} else {
+		trustBtn = btnInactive.Render("✓ Trust")
+		skipBtn = btnActiveDeny.Render("✗ Skip")
+	}
+	buttons := fmt.Sprintf(" %s  %s  %s", trustBtn, skipBtn, hintStyle.Render("Tab/←→ pilih · Enter konfirmasi"))
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString(buttons)
+	padding = innerWidth - lipgloss.Width(buttons)
+	if padding > 0 {
+		sb.WriteString(strings.Repeat(" ", padding))
+	}
+	sb.WriteString(borderStyle.Render("│"))
+	sb.WriteString("\n")
+
+	// Bottom border
+	sb.WriteString(borderStyle.Render("└" + strings.Repeat("─", innerWidth) + "┘"))
 
 	return sb.String()
 }

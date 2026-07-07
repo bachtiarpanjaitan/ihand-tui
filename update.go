@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bachtiarpanjaitan/ihandai-go/pkg/core"
 	tea "charm.land/bubbletea/v2"
+	"github.com/bachtiarpanjaitan/ihandai-go/pkg/core"
 )
 
 // tickMsg is sent every 500ms to animate the status dots while thinking.
@@ -32,7 +32,7 @@ func (m model) Init() tea.Cmd {
 
 func formatStreamForDisplay(content string) string {
 	s := strings.ReplaceAll(content, "Thought:", "**Pemikiran:**")
-	
+
 	// Format Action Input:
 	if strings.Contains(s, "Action Input:") {
 		s = strings.ReplaceAll(s, "Action Input:", "\n**Parameter:**\n```json\n")
@@ -50,7 +50,7 @@ func formatStreamForDisplay(content string) string {
 			s = strings.ReplaceAll(s, "Action:", "\n**Memanggil Tool:**")
 		}
 	}
-	
+
 	// Unescape common JSON escapes globally so code inside JSON looks like code during stream.
 	// Gemini sometimes double-escapes backslashes in JSON, so we handle both \\n and \n.
 	s = strings.ReplaceAll(s, "\\\\n", "\n")
@@ -62,12 +62,12 @@ func formatStreamForDisplay(content string) string {
 
 	// If it contains Final Answer, we can highlight it
 	s = strings.ReplaceAll(s, "Final Answer:", "**Jawaban:**\n")
-	
+
 	// Format into markdown if we see a code block inside the JSON, we can trick glamour by
 	// replacing the JSON keys if they appear.
 	s = strings.ReplaceAll(s, "\"code\": \"", "\n```\n")
 	s = strings.ReplaceAll(s, "\"content\": \"", "\n```\n")
-	
+
 	return s
 }
 
@@ -104,8 +104,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.done {
 			m.streamingContent += msg.content
 			m.messages[len(m.messages)-1].content = formatStreamForDisplay(m.streamingContent)
+
+			// Early tool execution: eksekusi tool auto-trusted langsung saat streaming
+			if m.earlyTool.toolName == "" {
+				if toolCall, isFinal := parseReActResponse(m.streamingContent); toolCall.name != "" && !isFinal && toolCall.input != "{}" {
+					if isToolAutoTrustedMode(m.mode, toolCall.name) {
+						toolOutput := executeToolCall(msg.state.activeTools, toolCall)
+						isToolErr := strings.HasPrefix(toolOutput, "Error")
+						m.earlyTool = earlyToolExec{
+							toolName: toolCall.name,
+							input:    toolCall.input,
+							output:   toolOutput,
+							isError:  isToolErr,
+						}
+						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+						role := "tool"
+						if isToolErr {
+							role = "tool-error"
+						}
+						m.toolActivity = fmt.Sprintf("%s", toolCall.name)
+						m.messages = append(m.messages, chatMessage{
+							role:    role,
+							content: display,
+							tokens:  0,
+						})
+						m.rebuildViewport()
+					}
+				}
+			}
 			m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
-			
+
 			// Throttle UI rendering to max ~20 FPS (50ms) to avoid lag
 			now := time.Now()
 			if now.Sub(m.lastStreamRender) > 50*time.Millisecond {
@@ -119,14 +147,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		finalResp := &core.Response{
 			Content: m.streamingContent,
 		}
-		
+
 		// Reset stream state
 		m.streamStartTime = time.Time{}
 		m.streamingContent = ""
-		
-		// Remove the placeholder message because processChatStep will add it again properly
-		// (or we could keep it and modify processChatStep, but it's cleaner to reuse processChatStep as is)
-		m.messages = m.messages[:len(m.messages)-1]
+
+		// Remove the placeholder assistant message — it was added at stream start and
+		// processChatStep will add the real assistant message from resp.Content.
+		// If mid-stream tool execution added messages after the placeholder, keep those.
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].role == "assistant" && m.messages[i].content == "" {
+				m.messages = append(m.messages[:i], m.messages[i+1:]...)
+				break
+			}
+		}
 
 		// Dispatch to the regular ReAct handler
 		return m, func() tea.Msg {
@@ -226,6 +260,9 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case "y":
+		if m.state == stateTrustPrompt {
+			return m.handleTrustApprove()
+		}
 		if m.state == stateConfirming {
 			return m.handleConfirmApprove()
 		}
@@ -250,6 +287,9 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case "n":
+		if m.state == stateTrustPrompt {
+			return m.handleTrustDeny()
+		}
 		if m.state == stateConfirming {
 			return m.handleConfirmDeny()
 		}
@@ -289,6 +329,14 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.state = stateReady
 			m.textarea.Focus()
 			return m.switchEffort(m.tempEffort)
+		}
+
+		// Handle trust prompt
+		if m.state == stateTrustPrompt {
+			if m.confirmChoice == 0 {
+				return m.handleTrustApprove()
+			}
+			return m.handleTrustDeny()
 		}
 
 		if m.selSugg >= 0 && len(m.suggestions) > 0 {
@@ -333,6 +381,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		m.tickCount = 0
 		m.toolActivity = ""
+		m.trustWrite = m.trustConfirmed
 		m.textarea.Reset()
 		m.textarea.Blur()
 		// Clear file mentions after sending
@@ -343,12 +392,17 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 		return m, tea.Batch(
-			startChatLoop(m.ai, m.ctx, m.session, llmInput, m.memory, m.toolList, m.mode, m.effort),
+			startChatLoop(m.ai, m.ctx, m.session, llmInput, m.memory, m.toolList, m.mode, m.effort, m.allowedDir),
 			tickCmd(),
 		)
 
 	case "up", "left":
 		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
+		if m.state == stateTrustPrompt {
 			m.confirmChoice = (m.confirmChoice + 1) % 2
 			m.rebuildViewport()
 			return m, nil
@@ -376,6 +430,11 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "down", "right", "tab":
 		if m.state == stateConfirming {
+			m.confirmChoice = (m.confirmChoice + 1) % 2
+			m.rebuildViewport()
+			return m, nil
+		}
+		if m.state == stateTrustPrompt {
 			m.confirmChoice = (m.confirmChoice + 1) % 2
 			m.rebuildViewport()
 			return m, nil
@@ -483,6 +542,35 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleTrustApprove menyimpan trust untuk direktori ini dan melanjutkan.
+func (m model) handleTrustApprove() (tea.Model, tea.Cmd) {
+	// Persist trust ke disk
+	if err := trustDir(m.allowedDirAbs); err != nil {
+		m.messages = append(m.messages, chatMessage{
+			role:    "error",
+			content: fmt.Sprintf("Gagal menyimpan trust: %v", err),
+			tokens:  0,
+		})
+	}
+	m.trustConfirmed = true
+	m.trustWrite = true
+	m.state = stateReady
+	m.toolActivity = "✓ Direktori dipercaya — mode auto/edit/team dapat menulis file langsung"
+	m.recalcLayout()
+	m.rebuildViewport()
+	return m, nil
+}
+
+// handleTrustDeny melewati trust prompt tanpa menyimpan trust.
+func (m model) handleTrustDeny() (tea.Model, tea.Cmd) {
+	m.trustConfirmed = false
+	m.trustWrite = false
+	m.state = stateReady
+	m.toolActivity = "✗ Trust dilewati — konfirmasi akan diminta setiap kali"
+	m.recalcLayout()
+	m.rebuildViewport()
+	return m, nil
+}
 
 // handleConfirmApprove mengeksekusi tool setelah disetujui user.
 func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
