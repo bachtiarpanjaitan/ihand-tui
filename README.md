@@ -35,20 +35,29 @@ Setelah itu, jalankan dari mana saja:
 ihand
 ```
 
-### Install (Windows — PowerShell)
+### Install (Windows — download binary)
 
 ```powershell
-# Opsi 1: install script (butuh Go terinstall)
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install.ps1 | iex"
+# Download langsung .exe dari GitHub Releases (gak perlu Go)
+curl -LO https://github.com/bachtiarpanjaitan/ihand-tui/releases/download/v0.1.6/ihand-windows-amd64.exe
+mkdir %USERPROFILE%\AppData\Local\ihand 2>nul
+move ihand-windows-amd64.exe %USERPROFILE%\AppData\Local\ihand\ihand.exe
 
-# Opsi 2: build manual
-git clone https://github.com/bachtiarpanjaitan/ihand-tui.git
-cd ihand-tui
-go build -o ihand.exe .
-.\ihand.exe
+# Tambah ke PATH (sekali saja)
+setx PATH "%PATH%;%USERPROFILE%\AppData\Local\ihand"
+
+# Jalankan
+ihand
 ```
 
-> **Prerequisites:** Install Go dari [go.dev/dl](https://go.dev/dl/) atau `winget install GoLang.Go`
+Atau via PowerShell:
+
+```powershell
+# Download + install otomatis
+irm https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install.ps1 | iex
+```
+
+> **No dependencies —** Binary siap pakai. Lihat [Install Methods](#install-methods) untuk detail.
 
 > **No dependencies.** Download binary langsung dari GitHub Releases. Lihat [Install Methods](#install-methods) untuk alternatif lain.
 
@@ -328,19 +337,18 @@ bash scripts/install.sh
 
 ### Windows
 
-**Prerequisites:** Install Go dari [go.dev/dl](https://go.dev/dl/) atau `winget install GoLang.Go`
+**Opsi 1 — Download binary (recommended, no dependencies):**
 
-**Opsi 1 — PowerShell script:**
+Download `ihand-windows-amd64.exe` dari [GitHub Releases](https://github.com/bachtiarpanjaitan/ihand-tui/releases), rename ke `ihand.exe`, simpan di folder mana saja.
+
+Atau via PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-# Atau one-liner:
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install.ps1 | iex"
+# Download + install ke %USERPROFILE%\AppData\Local\ihand\ + PATH
+irm https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install.ps1 | iex
 ```
 
-Script akan build binary dan install ke `%USERPROFILE%\AppData\Local\ihand\`, lalu tambahkan ke User PATH.
-
-**Opsi 2 — Build manual:**
+**Opsi 2 — Build dari source (butuh Go):**
 
 ```powershell
 git clone https://github.com/bachtiarpanjaitan/ihand-tui.git
@@ -348,12 +356,6 @@ cd ihand-tui
 go build -o ihand.exe .
 .\ihand.exe
 ```
-
-**Opsi 3 — Download binary dari GitHub Releases:**
-
-1. Buka [Releases](https://github.com/bachtiarpanjaitan/ihand-tui/releases)
-2. Download `ihand-<version>-windows-amd64.zip`
-3. Extract, jalankan `ihand.exe`
 
 ### Build manual
 
