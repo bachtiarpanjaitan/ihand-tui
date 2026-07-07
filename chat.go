@@ -664,17 +664,7 @@ func formatToolDisplay(toolName, input, output string) string {
 		}
 	case "read_file":
 		if path != "" {
-			// Show content preview from output
-			content := extractField(output, `"content"`)
-			preview := ""
-			if content != "" {
-				if len(content) > 500 {
-					preview = "\n" + content[:500] + "..."
-				} else {
-					preview = "\n" + content
-				}
-			}
-			return fmt.Sprintf("%s — Dibaca (%d bytes)%s", path, size, preview)
+			return fmt.Sprintf("%s — Dibaca (%d bytes)", path, size)
 		}
 	case "write_file":
 		success := strings.Contains(output, `"success": true`) || strings.Contains(output, `"success":true`)
@@ -980,7 +970,11 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("ATURAN KRITIS:\n")
 		b.WriteString("- WAJIB pakai write_file untuk SETIAP perubahan file\n")
 		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah diubah\" tanpa Action: write_file\n")
-		b.WriteString("- BACA file dulu dengan read_file sebelum mengubahnya\n")
+		b.WriteString("- HANYA baca file yang relevan dengan perubahan — jangan baca seluruh codebasen")
+		b.WriteString("- Jika perubahan kecil (misal: nambah function, edit 1 baris), baca secukupnya sajan")
+		b.WriteString("- Gunakan read_file_lines untuk baca baris tertentu jika sudah tahu path dan lokasinyan")
+		b.WriteString("- write_file SELALU menulis KONTEN FILE LENGKAP (bukan patch/diff) — tulis ulang seluruh filen")
+		b.WriteString("- Dulang ulang kebiasaan: jangan baca file yang sudah jelas isinyan")
 		b.WriteString("- Format: Action: write_file({\"path\": \"...\", \"content\": \"...\"})\n")
 		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap seperti cmd/api/handler.go\n")
 		b.WriteString("- Gunakan create_directory jika ingin membuat folder kosong terlebih dahulu\n")
@@ -995,6 +989,9 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user. ")
 		b.WriteString("Rencanakan sendiri langkah-langkahnya dan eksekusi berurutan.\n\n")
 		b.WriteString("ATURAN KRITIS:\n")
+		b.WriteString("- HANYA baca file yang relevan — jangan baca seluruh codebase untuk perubahan keciln")
+		b.WriteString("- Jika sudah tahu isi file, langsung write tanpa baca ulangn")
+		b.WriteString("- write_file SELALU tulis KONTEN FILE LENGKAP (bukan patch)n")
 		b.WriteString("- WAJIB gunakan tools (read_file, write_file, list_files, create_directory) untuk setiap aksi\n")
 		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah dibuat/diubah\" tanpa Action: write_file\n")
 		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap\n")

@@ -31,44 +31,37 @@ func (m model) Init() tea.Cmd {
 }
 
 func formatStreamForDisplay(content string) string {
-	s := strings.ReplaceAll(content, "Thought:", "**Pemikiran:**")
-
-	// Format Action Input:
-	if strings.Contains(s, "Action Input:") {
-		s = strings.ReplaceAll(s, "Action Input:", "\n**Parameter:**\n```json\n")
-		s += "\n```"
-	}
-
-	// Format Action: tool({...})
-	// We can't use regex easily on incomplete stream, but we can detect if it looks like a function call
-	if strings.Contains(s, "Action:") {
-		// If Action: is followed by a function call pattern
-		if strings.Contains(s, "({") {
-			s = strings.ReplaceAll(s, "Action:", "\n**Memanggil Tool:**\n```json\n")
-			s += "\n```"
-		} else {
-			s = strings.ReplaceAll(s, "Action:", "\n**Memanggil Tool:**")
+	// Cari tool call — tampilkan hanya tool yang sedang dipanggil
+	if strings.Contains(content, "Final Answer:") {
+		// Tampilkan Final Answer saja
+		if idx := strings.Index(content, "Final Answer:"); idx >= 0 {
+			answer := strings.TrimSpace(content[idx+13:])
+			// Batasi panjang preview
+			if len(answer) > 2000 {
+				answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
+			}
+			return "Jawaban: " + answer
 		}
 	}
 
-	// Unescape common JSON escapes globally so code inside JSON looks like code during stream.
-	// Gemini sometimes double-escapes backslashes in JSON, so we handle both \\n and \n.
-	s = strings.ReplaceAll(s, "\\\\n", "\n")
-	s = strings.ReplaceAll(s, "\\n", "\n")
-	s = strings.ReplaceAll(s, "\\\\t", "\t")
-	s = strings.ReplaceAll(s, "\\t", "\t")
-	s = strings.ReplaceAll(s, "\\\\\"", "\"")
-	s = strings.ReplaceAll(s, "\\\"", "\"")
+	if strings.Contains(content, "Action:") {
+		// Ekstrak nama tool dari Action: line
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Action:") {
+				action := strings.TrimSpace(strings.TrimPrefix(line, "Action:"))
+				// Ambil nama tool sebelum '('
+				if idx := strings.Index(action, "("); idx > 0 {
+					action = strings.TrimSpace(action[:idx])
+				}
+				return fmt.Sprintf("**Memanggil:** %s ...", action)
+			}
+		}
+	}
 
-	// If it contains Final Answer, we can highlight it
-	s = strings.ReplaceAll(s, "Final Answer:", "**Jawaban:**\n")
-
-	// Format into markdown if we see a code block inside the JSON, we can trick glamour by
-	// replacing the JSON keys if they appear.
-	s = strings.ReplaceAll(s, "\"code\": \"", "\n```\n")
-	s = strings.ReplaceAll(s, "\"content\": \"", "\n```\n")
-
-	return s
+	// Jika tidak ada tool call, tampilkan indikator berpikir
+	return "Sedang Berpikir..."
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -197,12 +190,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		if m.state == stateThinking {
 			m.tickCount++
-			dots := strings.Repeat(".", (m.tickCount%4)+1)
+			spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+			spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
+
+			// Status message (bottom bar)
 			if m.mode == modeTeam && m.currentTeamRole != roleNone {
-				m.statusMsg = fmt.Sprintf("[%s] Memproses%s", m.currentTeamRole.String(), dots)
+				m.statusMsg = fmt.Sprintf("[%s] %s Memproses", m.currentTeamRole.String(), spinner)
 			} else {
-				m.statusMsg = "Memproses" + dots
+				m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
 			}
+
+			// Update the last message with spinner prefix for animated effect
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				msg := m.messages[i]
+				if msg.role == "tool" || msg.role == "tool-error" || msg.role == "assistant" {
+					base := msg.content
+					// Remove any existing spinner prefix
+					for _, f := range spinnerFrames {
+						base = strings.TrimPrefix(base, f+" ")
+					}
+					base = strings.TrimLeft(base, ".")
+					// For tool messages, add animated dot prefix
+					if msg.role == "tool" || msg.role == "tool-error" {
+						m.messages[i].content = spinner + " " + strings.TrimSpace(base)
+					}
+					break
+				}
+			}
+
 			cmds = append(cmds, tickCmd())
 		}
 
