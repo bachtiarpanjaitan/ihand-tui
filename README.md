@@ -12,8 +12,16 @@ Chat dengan AI langsung dari terminal. Full-screen TUI, rendering markdown, file
 
 ```bash
 brew tap bachtiarpanjaitan/homebrew-tap
+brew trust bachtiarpanjaitan/tap/ihand-tui   # required since Homebrew 4.10+
 brew install ihand-tui
 ```
+
+> **Trust error?** Homebrew 4.10+ mewajibkan trust untuk third-party tap.
+> Ganti `brew trust` dengan satu perintah berikut jika gagal:
+> ```bash
+> export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+> brew install bachtiarpanjaitan/tap/ihand-tui
+> ```
 
 ### Install (macOS / Linux — curl)
 
@@ -248,6 +256,7 @@ ihand ~/my-project                       # batasi ke folder tertentu
 
 ```bash
 brew tap bachtiarpanjaitan/homebrew-tap
+brew trust bachtiarpanjaitan/tap/ihand-tui   # required since Homebrew 4.10+
 brew install ihand-tui
 ```
 
@@ -255,6 +264,22 @@ Setelah itu jalankan dari mana saja:
 
 ```bash
 ihand
+```
+
+**Troubleshooting — trust error:**
+
+Homebrew 4.10+ mewajibkan trust untuk third-party tap. Jika `brew trust` gagal:
+
+```bash
+# Opsi 1: bypass trust check (sementara)
+export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
+brew install bachtiarpanjaitan/tap/ihand-tui
+
+# Opsi 2: trust semua formula dari tap
+brew trust bachtiarpanjaitan/tap
+
+# Opsi 3: untap jika tidak digunakan
+brew untap bachtiarpanjaitan/homebrew-tap
 ```
 
 > Untuk update: `brew upgrade ihand-tui`
