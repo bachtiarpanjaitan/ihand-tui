@@ -96,7 +96,7 @@ func (m *model) renderFull() string {
 			}
 		}
 		if m.mouseEnabled {
-			status += dimStyle.Render(" mouse on (Ctrl+E)")
+			status += dimStyle.Render(" mouse (Ctrl+E mati, Shift+select teks)")
 		}
 		statusW := lipgloss.Width(status)
 		if m.width > statusW {
