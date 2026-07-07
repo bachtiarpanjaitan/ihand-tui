@@ -31,12 +31,51 @@ func (m model) Init() tea.Cmd {
 }
 
 func formatStreamForDisplay(content string) string {
-	// Cari tool call — tampilkan hanya tool yang sedang dipanggil
+	// Cari tool call — tampilkan tool + path file
+	if strings.Contains(content, "Action:") {
+		var toolName string
+		var path string
+
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+
+			if strings.HasPrefix(trimmed, "Action:") {
+				action := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action:"))
+				if idx := strings.Index(action, "("); idx > 0 {
+					toolName = strings.TrimSpace(action[:idx])
+				} else {
+					toolName = action
+				}
+			}
+
+			// Cari path dari Action Input atau dari Action: inline
+			if toolName != "" && path == "" {
+				if strings.HasPrefix(trimmed, "Action Input:") {
+					input := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action Input:"))
+					if p := extractField(input, "\"path\""); p != "" {
+						path = p
+					}
+				}
+				if path == "" {
+					if p := extractField(line, "\"path\""); p != "" {
+						path = p
+					}
+				}
+			}
+		}
+
+		if toolName != "" {
+			if path != "" {
+				return toolName + "(" + path + ")"
+			}
+			return toolName + "()"
+		}
+	}
+
 	if strings.Contains(content, "Final Answer:") {
-		// Tampilkan Final Answer saja
 		if idx := strings.Index(content, "Final Answer:"); idx >= 0 {
 			answer := strings.TrimSpace(content[idx+13:])
-			// Batasi panjang preview
 			if len(answer) > 2000 {
 				answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
 			}
@@ -44,24 +83,8 @@ func formatStreamForDisplay(content string) string {
 		}
 	}
 
-	if strings.Contains(content, "Action:") {
-		// Ekstrak nama tool dari Action: line
-		lines := strings.Split(content, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "Action:") {
-				action := strings.TrimSpace(strings.TrimPrefix(line, "Action:"))
-				// Ambil nama tool sebelum '('
-				if idx := strings.Index(action, "("); idx > 0 {
-					action = strings.TrimSpace(action[:idx])
-				}
-				return fmt.Sprintf("**Memanggil:** %s ...", action)
-			}
-		}
-	}
-
 	// Jika tidak ada tool call, tampilkan indikator berpikir
-	return "Sedang Berpikir..."
+	return ""
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -116,10 +139,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							role = "tool-error"
 						}
 						m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-						m.messages = append(m.messages, chatMessage{
+						placeholderIdx := len(m.messages) - 1
+						// Replace the streaming placeholder with the tool result (avoids duplication)
+						m.messages[placeholderIdx] = chatMessage{
 							role:    role,
 							content: display,
 							tokens:  0,
+						}
+						// Add a NEW placeholder for remaining stream content
+						m.messages = append(m.messages, chatMessage{
+							role:    "assistant",
+							content: "",
+							timing:  0,
 						})
 						m.rebuildViewport()
 					}
@@ -200,19 +231,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
 			}
 
-			// Update the last message with spinner prefix for animated effect
+			// Animate spinner on the streaming assistant message (not tool results)
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				msg := m.messages[i]
-				if msg.role == "tool" || msg.role == "tool-error" || msg.role == "assistant" {
+				if msg.role == "assistant" {
 					base := msg.content
-					// Remove any existing spinner prefix
+					// Remove any existing spinner or dot prefix
 					for _, f := range spinnerFrames {
 						base = strings.TrimPrefix(base, f+" ")
 					}
 					base = strings.TrimLeft(base, ".")
-					// For tool messages, add animated dot prefix
-					if msg.role == "tool" || msg.role == "tool-error" {
-						m.messages[i].content = spinner + " " + strings.TrimSpace(base)
+					base = strings.TrimSpace(base)
+					// Tambah spinner di depan — jika base kosong, tulis "Sedang Berpikir"
+					if base == "" {
+						m.messages[i].content = spinner + " Sedang Berpikir"
+					} else {
+						m.messages[i].content = spinner + " " + base
 					}
 					break
 				}

@@ -294,6 +294,7 @@ type model struct {
 
 	mouseEnabled bool // toggle mouse capture (for text selection)
 	tickCount    int  // animation counter for status dots
+	retryCount   int  // hitungan retry untuk error LLM
 
 	// Streaming state
 	streamingContent string        // accumulated text from stream chunks

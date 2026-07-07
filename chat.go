@@ -18,6 +18,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+const maxRetries = 3
+
 // ---------------------------------------------------------------------------
 // ReAct regex patterns
 // ---------------------------------------------------------------------------
@@ -195,6 +197,15 @@ func continueChatLoop(ai *ihandai.Client, ctx context.Context, state chatLoopSta
 // Returns (model, cmd, done) where done=true means the loop is finished.
 func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	if msg.err != nil {
+		m.retryCount++
+		if m.retryCount < maxRetries {
+			m.statusMsg = fmt.Sprintf("⚠ Retry %d/%d", m.retryCount, maxRetries)
+			m.rebuildViewport()
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, msg.state),
+			), false
+		}
 		m.state = stateReady
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
@@ -209,6 +220,15 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	m.currentTeamRole = state.teamRole
 	resp := msg.response
 	if resp == nil {
+		m.retryCount++
+		if m.retryCount < maxRetries {
+			m.statusMsg = fmt.Sprintf("⚠ Retry %d/%d", m.retryCount, maxRetries)
+			m.rebuildViewport()
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, msg.state),
+			), false
+		}
 		m.state = stateReady
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
@@ -219,6 +239,15 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		return m.textarea.Focus(), true
 	}
 	if resp.Content == "" {
+		m.retryCount++
+		if m.retryCount < maxRetries {
+			m.statusMsg = fmt.Sprintf("⚠ Retry %d/%d", m.retryCount, maxRetries)
+			m.rebuildViewport()
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, msg.state),
+			), false
+		}
 		m.state = stateReady
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
@@ -229,6 +258,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		return m.textarea.Focus(), true
 	}
 	respTokens := countTokens(resp.Content)
+	m.retryCount = 0 // reset retry on success
 	state.totalTokens += respTokens
 	m.totalTokens += respTokens // update UI counter live
 
