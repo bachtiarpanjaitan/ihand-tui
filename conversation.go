@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	glamour "charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
 
@@ -64,6 +65,46 @@ func (m *model) buildConversation() string {
 // welcomeString returns the welcome message when there are no messages yet.
 func (m *model) welcomeString() string {
 	return welcomeMessage(m.provider, m.modelName, m.width)
+}
+
+// renderMarkdown merender teks Markdown ke format terminal menggunakan glamour.
+func (m *model) renderMarkdown(text string) string {
+	if text == "" {
+		return ""
+	}
+	// Hitung lebar konten
+	contentWidth := m.width - 6
+	if contentWidth < 40 {
+		contentWidth = 40
+	}
+
+	// Buat atau update renderer jika lebar berubah
+	if m.mdWidth != contentWidth || m.mdRenderer == nil {
+		m.mdWidth = contentWidth
+		r, err := glamour.NewTermRenderer(
+			glamour.WithStandardStyle("dark"),
+			glamour.WithWordWrap(contentWidth),
+		)
+		if err != nil {
+			m.mdRenderer = nil
+		} else {
+			m.mdRenderer = r
+		}
+	}
+
+	if m.mdRenderer != nil {
+		rendered, err := m.mdRenderer.Render(text)
+		if err == nil {
+			return rendered
+		}
+	}
+
+	// Fallback: fallback rendering manual untuk bold/italic/kode
+	result := text
+	result = strings.ReplaceAll(result, "**", "")
+	result = strings.ReplaceAll(result, "__", "")
+	result = strings.ReplaceAll(result, "`", "")
+	return result
 }
 
 func formatDuration(d time.Duration) string {

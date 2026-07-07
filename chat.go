@@ -264,7 +264,14 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
 
-
+	// Jika ada Action: tapi konten juga mengandung Final Answer: setelah Action terakhir,
+	// ekstrak Final Answer-nya agar ditampilkan. Tool call sudah dieksekusi via early execution.
+	if !isFinal && toolCall.name != "" && strings.Contains(resp.Content, "Final Answer:") && m.earlyTool.toolName != "" {
+		if m := finalRe.FindStringSubmatch(resp.Content); len(m) > 1 {
+			toolCall.output = strings.TrimSpace(m[1])
+			isFinal = true
+		}
+	}
 
 	// --- Final answer ---
 	if isFinal {
@@ -1223,6 +1230,32 @@ func readProjectConfigs(allowedDir string) string {
 			lines = append(lines, "... (+ lebih banyak)")
 		}
 		result.WriteString(fmt.Sprintf("=== %s (%s) ===\n", cf.label, cf.path))
+		result.WriteString(strings.Join(lines, "\n"))
+		result.WriteString("\n\n")
+	}
+
+	// Auto-baca SEMUA file markdown (.md) di root project untuk konteks
+	matches, _ := filepath.Glob(filepath.Join(absDir, "*.md"))
+	if len(matches) > 10 {
+		matches = matches[:10] // batasi maks 10 file markdown
+	}
+	for _, fullPath := range matches {
+		name := filepath.Base(fullPath)
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		// Batasi panjang konten (max 50 baris untuk markdown)
+		lines := strings.Split(content, "\n")
+		if len(lines) > 50 {
+			lines = lines[:50]
+			lines = append(lines, "... (+ lebih banyak)")
+		}
+		result.WriteString(fmt.Sprintf("=== PROJECT MARKDOWN (%s) ===\n", name))
 		result.WriteString(strings.Join(lines, "\n"))
 		result.WriteString("\n\n")
 	}

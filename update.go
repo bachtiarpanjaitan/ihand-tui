@@ -272,6 +272,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 		return m, tea.Batch(cmds...)
+
+	case tea.MouseMsg:
+		// Forward ke viewport
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		cmds = append(cmds, vpCmd)
+		// Mouse click di area textarea — posisikan kursor via CursorDown/Up
+		if click, ok := msg.(tea.MouseClickMsg); ok && m.state != stateThinking {
+			// Hitung posisi textarea di layar
+			taY := m.viewport.Height() + 4 // header + 2 separator + status
+			if len(m.taskList) > 0 {
+				taY += len(m.taskList) + 2
+			}
+			// Baris yang diklik relatif terhadap textarea
+			taRow := click.Y - taY
+			// Kolom (kurangi margin)
+			taCol := click.X - 3
+			if taRow >= 0 && taRow < 3 && taCol >= 0 {
+				// Dapatkan nilai textarea
+				val := m.textarea.Value()
+				lines := strings.Split(val, "\n")
+				// Tentukan target row (baris dalam text)
+				targetRow := taRow
+				if targetRow >= len(lines)-1 {
+					targetRow = len(lines) - 1
+					if targetRow < 0 {
+						targetRow = 0
+					}
+				}
+				// Pindah ke awal text dulu, lalu ke target row/col
+				// via CursorDown / SetCursorColumn
+				// (textarea v2 tidak punya SetRow public)
+				m.textarea.MoveToBegin()
+				for r := 0; r < targetRow; r++ {
+					m.textarea.CursorDown()
+				}
+				if taCol < len(lines[targetRow]) {
+					m.textarea.SetCursorColumn(taCol)
+				} else {
+					m.textarea.CursorEnd()
+				}
+			}
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	var taCmd tea.Cmd
