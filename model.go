@@ -341,8 +341,9 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	findFilesTool := toolspkg.NewFindFilesTool(allowedDir)
 	searchTextTool := toolspkg.NewSearchTextTool(allowedDir)
 	readFileLinesTool := toolspkg.NewReadFileLinesTool(allowedDir)
-	toolList := []tools.Tool{mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool}
-	ai.SetTools(mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool)
+	execTool := toolspkg.NewExecTool(allowedDir)
+	toolList := []tools.Tool{mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool}
+	ai.SetTools(mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool)
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
 	vp.SoftWrap = true

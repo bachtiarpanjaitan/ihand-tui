@@ -8,7 +8,14 @@ Chat dengan AI langsung dari terminal. Full-screen TUI, rendering markdown, file
 
 ## Quick Start
 
-### Install (curl)
+### Install (macOS — Homebrew)
+
+```bash
+brew tap bachtiarpanjaitan/homebrew-tap
+brew install ihand-tui
+```
+
+### Install (macOS / Linux — curl)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bachtiarpanjaitan/ihand-tui/master/scripts/install-remote.sh | bash
@@ -236,6 +243,21 @@ ihand ~/my-project                       # batasi ke folder tertentu
 ---
 
 ## Install Methods
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap bachtiarpanjaitan/homebrew-tap
+brew install ihand-tui
+```
+
+Setelah itu jalankan dari mana saja:
+
+```bash
+ihand
+```
+
+> Untuk update: `brew upgrade ihand-tui`
 
 ### curl (macOS & Linux)
 

@@ -604,7 +604,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 // needsPermission returns true jika tool memerlukan konfirmasi user sebelum dieksekusi.
 func needsPermission(name string) bool {
 	switch name {
-	case "write_file", "read_file", "create_directory":
+	case "write_file", "read_file", "create_directory", "exec":
 		return true
 	default:
 		return false
@@ -643,6 +643,8 @@ func formatToolDisplay(toolName, input, output string) string {
 		case "write_file":
 			return fmt.Sprintf("%s — %s", path, errMsg)
 		case "list_files":
+		case "exec":
+			return fmt.Sprintf("%s — %s", path, errMsg)
 			return fmt.Sprintf("%s — %s", path, errMsg)
 		}
 	}
@@ -755,6 +757,39 @@ func formatToolDisplay(toolName, input, output string) string {
 		if path != "" {
 			return fmt.Sprintf("%s — %d item", path, count)
 		}
+	case "exec":
+		execStdout := extractField(output, `"stdout"`)
+		execStderr := extractField(output, `"stderr"`)
+		exitCode := extractField(output, `"exit_code"`)
+		cmdDisplay := toolName
+		if p := extractField(input, `"command"`); p != "" {
+			cmdDisplay = p
+		}
+		if exitCode == "0" {
+			if execStdout != "" {
+				if len(execStdout) > 1000 {
+					return fmt.Sprintf("$ %s\n%s\n... (output truncated)", cmdDisplay, execStdout[:1000])
+				}
+				return fmt.Sprintf("$ %s\n%s", cmdDisplay, execStdout)
+			}
+			return fmt.Sprintf("$ %s — Selesai (exit 0)", cmdDisplay)
+		}
+		result := fmt.Sprintf("$ %s (exit %s)", cmdDisplay, exitCode)
+		if execStdout != "" {
+			if len(execStdout) > 500 {
+				result += "\n" + execStdout[:500] + "..."
+			} else {
+				result += "\n" + execStdout
+			}
+		}
+		if execStderr != "" {
+			if len(execStderr) > 500 {
+				result += "\nstderr: " + execStderr[:500] + "..."
+			} else {
+				result += "\nstderr: " + execStderr
+			}
+		}
+		return result
 	}
 
 	// Fallback: just extract path and show simple message
@@ -1147,7 +1182,7 @@ func getReadOnlyTools(allTools []tools.Tool) []tools.Tool {
 
 // isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
 func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
-	if toolName != "write_file" && toolName != "create_directory" {
+	if toolName != "write_file" && toolName != "create_directory" && toolName != "exec" {
 		return false
 	}
 	return mode == modeAuto || mode == modeEdit || mode == modeTeam || trustWrite
@@ -1155,7 +1190,7 @@ func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
 
 // isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
 func isToolAutoTrustedMode(mode chatMode, toolName string) bool {
-	if toolName != "write_file" && toolName != "create_directory" {
+	if toolName != "write_file" && toolName != "create_directory" && toolName != "exec" {
 		return false
 	}
 	return mode == modeAuto || mode == modeEdit || mode == modeTeam
