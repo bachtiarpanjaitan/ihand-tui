@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	updateRepo  = "bachtiarpanjaitan/ihand-tui"
-	updateAPI   = "https://api.github.com/repos/" + updateRepo + "/releases/latest"
+	updateRepo = "bachtiarpanjaitan/ihand-tui"
+	updateAPI  = "https://api.github.com/repos/" + updateRepo + "/releases/latest"
 )
 
 // selfUpdate checks GitHub for the latest release and updates the running binary.
@@ -274,28 +274,30 @@ func replaceOnUnix(currentPath, newPath, latest string) string {
 		return fmt.Sprintf("Diupdate ke v%s!\n\n! Silakan restart ihand untuk menggunakan versi baru.", latest)
 	}
 
-	// Permission denied — try sudo mv
-	savedPath := currentPath + ".new"
+	// Permission denied — save binary in temp dir, then try sudo cp
+	savedPath := filepath.Join(os.TempDir(), "ihand-new")
 	if err := copyFile(newPath, savedPath); err != nil {
 		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
 	}
 
-	// Run sudo mv — the terminal will prompt for password
-	cmd := exec.Command("sudo", "mv", savedPath, currentPath)
+	// Run sudo cp — the terminal will prompt for password
+	cmd := exec.Command("sudo", "cp", savedPath, currentPath)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err == nil {
+		os.Remove(savedPath)
 		return fmt.Sprintf("Diupdate ke v%s!\n\n! Silakan restart ihand untuk menggunakan versi baru.", latest)
 	}
+	os.Remove(savedPath)
 
 	// sudo failed — show manual command as last resort
 	return fmt.Sprintf(
-		"Binary v%s sudah didownload.\n\n"+
+		"Binary v%s sudah didownload di:\n  %s\n\n"+
 			"Update gagal otomatis. Jalankan manual:\n\n"+
-			"  sudo mv %s %s\n\n"+
+			"  sudo cp %s %s\n\n"+
 			"Lalu restart ihand.",
-		latest, savedPath, currentPath,
+		latest, savedPath, savedPath, currentPath,
 	)
 }
 

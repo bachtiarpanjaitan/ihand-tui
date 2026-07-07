@@ -224,7 +224,7 @@ Setiap langkah AI — thinking, tool call, hasil — ditampilkan **real-time** d
 | `Enter` | Kirim pesan |
 | `Ctrl+J` | Baris baru (multiline input) |
 | `Tab` | Cycling suggestion (slash command / @mention) |
-| `Shift+Tab` | Ganti mode: Chat → Plan → Edit → Auto |
+| `Shift+Tab` | Ganti mode: Chat → Plan → Edit → Auto → Team |
 | `Ctrl+C` / `Ctrl+D` | Keluar |
 | `Ctrl+L` | Scroll viewport ke atas |
 | `↑` `↓` | Scroll per baris |
