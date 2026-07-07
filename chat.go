@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
+	toolspkg "github.com/bachtiarpanjaitan/ihand-tui/internal/tools"
 	"github.com/bachtiarpanjaitan/ihandai-go"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/core"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/memory"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/tools"
-	toolspkg "test-ihandai/internal/tools"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -642,9 +642,7 @@ func formatToolDisplay(toolName, input, output string) string {
 			return fmt.Sprintf("%s — %s", path, errMsg)
 		case "write_file":
 			return fmt.Sprintf("%s — %s", path, errMsg)
-		case "list_files":
-		case "exec":
-			return fmt.Sprintf("%s — %s", path, errMsg)
+		case "list_files", "exec":
 			return fmt.Sprintf("%s — %s", path, errMsg)
 		}
 	}

@@ -14,7 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	_ "github.com/bachtiarpanjaitan/ihandai-go/plugins/ollama"
-	_ "test-ihandai/internal/providers"
+	_ "github.com/bachtiarpanjaitan/ihand-tui/internal/providers"
 )
 
 var version = "dev" // set via ldflags: -X main.version=1.0.0

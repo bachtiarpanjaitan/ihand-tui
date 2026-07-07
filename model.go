@@ -15,7 +15,7 @@ import (
 	glamour "charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
-	toolspkg "test-ihandai/internal/tools"
+	toolspkg "github.com/bachtiarpanjaitan/ihand-tui/internal/tools"
 )
 
 // ---------------------------------------------------------------------------

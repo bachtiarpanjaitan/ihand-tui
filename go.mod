@@ -1,4 +1,4 @@
-module test-ihandai
+module github.com/bachtiarpanjaitan/ihand-tui
 
 go 1.26.1
 
@@ -8,7 +8,7 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/atotto/clipboard v0.1.4
-	github.com/bachtiarpanjaitan/ihandai-go v1.0.2-0.20260704160300-6d7e01c9304c
+	github.com/bachtiarpanjaitan/ihandai-go v1.0.3
 )
 
 require (
@@ -38,5 +38,3 @@ require (
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 )
-
-replace github.com/bachtiarpanjaitan/ihandai-go => ../ihandai
