@@ -260,6 +260,8 @@ Ketik `/` di input — autocomplete muncul. Tekan `Tab` untuk cycling.
 | `/self-update` | Update ke versi terbaru |
 | `/exit` | Keluar aplikasi |
 
+> **⚠️ `/self-update`:** Jangan jalankan `ihand` dengan `sudo` — fitur ini sudah otomatis meminta sudo jika diperlukan (saat binary di `/usr/local/bin` dll). Cukup jalankan `/self-update` dari dalam TUI, atau dari shell biasa: `ihand` lalu `/self-update`.
+
 ### 5. @Mention File & Folder
 
 Ketik `@` di input untuk autocomplete file/folder:

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -280,21 +279,10 @@ func replaceOnUnix(currentPath, newPath, latest string) string {
 		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
 	}
 
-	// Run sudo cp — the terminal will prompt for password
-	cmd := exec.Command("sudo", "cp", savedPath, currentPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err == nil {
-		os.Remove(savedPath)
-		return fmt.Sprintf("Diupdate ke v%s!\n\n! Silakan restart ihand untuk menggunakan versi baru.", latest)
-	}
-	os.Remove(savedPath)
-
-	// sudo failed — show manual command as last resort
+	// Skip sudo otomatis — akan mengambil alih terminal dan TUI gak bisa di-cancel.
 	return fmt.Sprintf(
 		"Binary v%s sudah didownload di:\n  %s\n\n"+
-			"Update gagal otomatis. Jalankan manual:\n\n"+
+			"Jalankan perintah berikut untuk mengupdate:\n\n"+
 			"  sudo cp %s %s\n\n"+
 			"Lalu restart ihand.",
 		latest, savedPath, savedPath, currentPath,

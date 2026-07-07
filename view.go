@@ -173,20 +173,17 @@ func renderSuggestions(m *model) string {
 func renderEffortSelector(m *model) string {
 	levels := []effortLevel{effortLow, effortMedium, effortHigh}
 	var b strings.Builder
-	b.WriteString(titleStyle().Render("Pilih effort level:\n\n"))
+	b.WriteString("Pilih effort level:\n\n")
 	for _, l := range levels {
-		mark := "  "
 		if l == m.tempEffort {
-			mark = "▸"
+			b.WriteString("   > ")
+		} else {
+			b.WriteString("     ")
 		}
-		style := lipgloss.NewStyle().
-			Foreground(lipgloss.Color(l.Color()))
-		if l == m.tempEffort {
-			style = style.Bold(true)
-		}
-		b.WriteString(fmt.Sprintf(" %s %s\n", mark, style.Render(l.String())))
+		b.WriteString(l.String())
+		b.WriteString("\n")
 	}
-	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Esc batal"))
+	b.WriteString("\n ↑↓ navigasi  •  Enter pilih  •  Esc batal")
 	return b.String()
 }
 
