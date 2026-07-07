@@ -83,11 +83,10 @@ func formatStreamForDisplay(content string) string {
 		}
 	}
 
-	// Jika tidak ada tool call, tampilkan konten streaming mentah (terbatas)
-	// agar user bisa melihat proses berpikir AI secara real-time
+	// Teks biasa — tampilkan sebagian agar user lihat proses real-time
 	display := strings.TrimSpace(content)
-	if len(display) > 200 {
-		display = display[:200] + "..."
+	if len(display) > 400 {
+		display = display[:400] + "..."
 	}
 	if display != "" {
 		return display
@@ -192,11 +191,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamStartTime = time.Time{}
 		m.streamingContent = ""
 
-		// Remove the placeholder assistant message — it was added at stream start and
-		// processChatStep will add the real assistant message from resp.Content.
-		// If mid-stream tool execution added messages after the placeholder, keep those.
+		// Hapus placeholder assistant (kosong atau "Jawaban:" dari formatStreamForDisplay)
 		for i := len(m.messages) - 1; i >= 0; i-- {
-			if m.messages[i].role == "assistant" && m.messages[i].content == "" {
+			msg := m.messages[i]
+			if msg.role == "assistant" && (msg.content == "" || strings.HasPrefix(msg.content, "Jawaban:")) {
 				m.messages = append(m.messages[:i], m.messages[i+1:]...)
 				break
 			}

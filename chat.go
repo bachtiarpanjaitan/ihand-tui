@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -27,7 +29,7 @@ const maxRetries = 3
 var (
 	actionRe   = regexp.MustCompile(`Action:\s*(.+)`)
 	inputRe    = regexp.MustCompile(`Action Input:\s*(.+)`)
-	finalRe    = regexp.MustCompile(`Final Answer:\s*(.+)`)
+	finalRe    = regexp.MustCompile(`Final Answer:\s*([\s\S]*)`)
 	toolCallRe = regexp.MustCompile(`(\w+)\((\{.*?\})\)`)
 )
 
@@ -124,6 +126,13 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 					break
 				}
 			}
+		}
+
+		// Auto-baca file konfigurasi project
+		if configContent := readProjectConfigs(allowedDir); configContent != "" {
+			systemPrompt += "\n--- KONFIGURASI PROJECT ---\n"
+			systemPrompt += configContent
+			systemPrompt += "------------------------------------------------\n"
 		}
 
 		messages := []core.Message{
@@ -287,6 +296,13 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					m.textarea.Focus(),
 					continueChatLoop(m.ai, m.ctx, state),
 				), false
+			}
+		}
+
+		// Auto-complete task yang masih in_progress
+		for i := range m.taskList {
+			if m.taskList[i].status == "in_progress" {
+				m.taskList[i].status = "completed"
 			}
 		}
 
@@ -970,26 +986,28 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
 		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
 		b.WriteString("\nLangkah:\n")
-		b.WriteString("1. BUAT PLAN: daftar file dengan format [ ] checklist\n")
-		b.WriteString("2. KERJAKAN: SATU file per write_file(), centang [x] tiap selesai\n")
-		b.WriteString("3. UPDATE: tulis ulang checklist setelah tiap file\n")
+		b.WriteString("1. BUAT PLAN GENERAL: kelompokkan file terkait jadi 1 task besar\n")
+		b.WriteString("2. KERJAKAN: SATU task mencakup BANYAK write_file()\n")
+		b.WriteString("3. UPDATE: centang [x] task SETELAH semua file di dalamnya selesai\n")
 		b.WriteString("4. REVIEW: exec() untuk build/check\n")
-		b.WriteString("5. Final Answer hanya jika SEMUA file selesai\n\n")
-		b.WriteString("\nContoh:\n")
-		b.WriteString("  - [ ] Buat index.html\n")
-		b.WriteString("  Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Buat index.html\n")
-		b.WriteString("  - [ ] Buat style.css\n")
-		b.WriteString("  Action: write_file({\"path\": \"style.css\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Buat style.css\n")
+		b.WriteString("5. Final Answer hanya jika SEMUA task selesai\n\n")
+		b.WriteString("\nContoh task GENERAL (bukan per file):\n")
+		b.WriteString("  - [ ] Setup struktur project (package.json, vite.config, index.html)\n")
+		b.WriteString("    Action: write_file({\"path\": \"package.json\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"vite.config.js\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Setup struktur project\n")
+		b.WriteString("  - [ ] Implementasi komponen UI (Navbar, Hero, Footer)\n")
+		b.WriteString("    Action: write_file({\"path\": \"src/Navbar.vue\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"src/Hero.vue\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Implementasi komponen UI\n")
 		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
-		b.WriteString("  Final Answer: Semua perubahan selesai.\n\n")
+		b.WriteString("  Final Answer: Semua task selesai.\n\n")
 		b.WriteString("ATURAN:\n")
-		b.WriteString("- Tulis PLAN checklist di awal (gunakan [ ])\n")
-		b.WriteString("- SATU file per write_file()\n")
-		b.WriteString("- Centang [x] setiap selesai\n")
-		b.WriteString("- exec() untuk build/check\n")
-		b.WriteString("- Final Answer hanya jika semua checklist tercentang\n\n")
+		b.WriteString("- 1 task GENERAL = banyak file terkait\n")
+		b.WriteString("- Centang [x] SETELAH semua file dalam task selesai\n")
+		b.WriteString("- Jangan buat task per-file, buat task per-fitur\n")
+		b.WriteString("- Final Answer hanya jika SEMUA task tercentang\n\n")
 		case modeAuto:
 		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM.\n")
 		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user.\n")
@@ -998,26 +1016,28 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
 		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
 		b.WriteString("\nLangkah:\n")
-		b.WriteString("1. BUAT PLAN: daftar file dengan format [ ] checklist\n")
-		b.WriteString("2. KERJAKAN: SATU file per write_file(), centang [x] tiap selesai\n")
-		b.WriteString("3. UPDATE: tulis ulang checklist setelah tiap file\n")
+		b.WriteString("1. BUAT PLAN GENERAL: kelompokkan file terkait jadi 1 task\n")
+		b.WriteString("2. KERJAKAN: SATU task = BANYAK write_file()\n")
+		b.WriteString("3. CENTANG [x] task SETELAH semua file di dalamnya selesai\n")
 		b.WriteString("4. REVIEW: exec() untuk build/check\n")
-		b.WriteString("5. Final Answer hanya jika SEMUA file selesai\n\n")
-		b.WriteString("\nContoh:\n")
-		b.WriteString("  - [ ] Buat index.html\n")
-		b.WriteString("  Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Buat index.html\n")
-		b.WriteString("  - [ ] Buat style.css\n")
-		b.WriteString("  Action: write_file({\"path\": \"style.css\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Buat style.css\n")
+		b.WriteString("5. Final Answer hanya jika SEMUA task selesai\n\n")
+		b.WriteString("\nContoh task GENERAL:\n")
+		b.WriteString("  - [ ] Setup project (package.json, vite.config, index.html)\n")
+		b.WriteString("    Action: write_file({\"path\": \"package.json\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"vite.config.js\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Setup project\n")
+		b.WriteString("  - [ ] Buat komponen utama (Navbar.vue, Hero.vue, Footer.vue)\n")
+		b.WriteString("    Action: write_file({\"path\": \"src/Navbar.vue\", \"content\": \"...\"})\n")
+		b.WriteString("    Action: write_file({\"path\": \"src/Hero.vue\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Buat komponen utama\n")
 		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
-		b.WriteString("  Final Answer: Semua file siap.\n\n")
+		b.WriteString("  Final Answer: Semua task selesai.\n\n")
 		b.WriteString("ATURAN:\n")
-		b.WriteString("- Tulis PLAN checklist di awal (gunakan [ ])\n")
-		b.WriteString("- SATU file per write_file()\n")
-		b.WriteString("- Centang [x] setiap selesai\n")
-		b.WriteString("- exec() untuk build/check\n")
-		b.WriteString("- Final Answer hanya jika semua checklist tercentang\n\n")
+		b.WriteString("- 1 task GENERAL = banyak file dalam 1 fitur\n")
+		b.WriteString("- Centang [x] SETELAH semua file dalam task selesai\n")
+		b.WriteString("- Jangan buat task per-file\n")
+		b.WriteString("- Final Answer hanya jika SEMUA task tercentang\n\n")
 	default:
 		b.WriteString("Kamu adalah AI asisten dalam MODE CHAT (percakapan normal). ")
 		b.WriteString("Bantu jawab pertanyaan, analisis kode, dan diskusi.\n\n")
@@ -1059,6 +1079,15 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("Tidak ada tools yang tersedia. Jawab langsung dengan Final Answer.\n\n")
 	}
 
+	// Mode Edit/Auto: ingatkan checklist di akhir (paling dekat dengan respon LLM)
+	if mode == modeEdit || mode == modeAuto {
+		b.WriteString("\nSEBELUM MEMULAI: Buat PLAN checklist dengan format:\n")
+		b.WriteString("  - [ ] Deskripsi task general (mencakup banyak file)\n")
+		b.WriteString("  - [ ] Task berikutnya\n")
+		b.WriteString("Centang [x] SETELAH semua file dalam task selesai ditulis.\n")
+		b.WriteString("Jangan memberikan Final Answer sebelum SEMUA task tercentang.\n\n")
+	}
+
 	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk Final Answer.")
 	return b.String()
 }
@@ -1093,21 +1122,32 @@ func parseTaskList(content string, oldTasks []taskItem) []taskItem {
 		desc   string
 		status string
 	}
-	foundMap := make(map[string]string) // desc → latest status
+	var foundList []foundItem
+	seen := make(map[string]int) // desc → index
 
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "- [ ] ") {
 			desc := strings.TrimPrefix(trimmed, "- [ ] ")
-			foundMap[desc] = "pending"
+			if idx, exists := seen[desc]; exists {
+				foundList[idx].status = "pending"
+			} else {
+				seen[desc] = len(foundList)
+				foundList = append(foundList, foundItem{desc: desc, status: "pending"})
+			}
 		} else if strings.HasPrefix(trimmed, "- [x] ") {
 			desc := strings.TrimPrefix(trimmed, "- [x] ")
-			foundMap[desc] = "completed"
+			if idx, exists := seen[desc]; exists {
+				foundList[idx].status = "completed"
+			} else {
+				seen[desc] = len(foundList)
+				foundList = append(foundList, foundItem{desc: desc, status: "completed"})
+			}
 		}
 	}
 
-	if len(foundMap) == 0 {
+	if len(foundList) == 0 {
 		return oldTasks
 	}
 
@@ -1117,27 +1157,22 @@ func parseTaskList(content string, oldTasks []taskItem) []taskItem {
 		oldMap[t.desc] = t.status
 	}
 
-	// Merge: dedup foundMap with preservation from oldMap
+	// Merge: pertahankan urutan foundList, status dari oldMap
 	var result []taskItem
-	for desc, latestStatus := range foundMap {
-		oldStatus, wasInOld := oldMap[desc]
+	for _, f := range foundList {
+		oldStatus, wasInOld := oldMap[f.desc]
 
 		if wasInOld {
 			// Known task: upgrade status but never downgrade
-			if latestStatus == "completed" || oldStatus == "completed" {
-				result = append(result, taskItem{desc: desc, status: "completed"})
+			if f.status == "completed" || oldStatus == "completed" {
+				result = append(result, taskItem{desc: f.desc, status: "completed"})
 			} else {
-				// Preserve existing status (in_progress or pending)
-				result = append(result, taskItem{desc: desc, status: oldStatus})
+				result = append(result, taskItem{desc: f.desc, status: oldStatus})
 			}
 		} else {
 			// New task: if it first appears as [x], treat as pending
 			// (LLM might be summarizing, not reporting real progress)
-			if latestStatus == "completed" {
-				result = append(result, taskItem{desc: desc, status: "pending"})
-			} else {
-				result = append(result, taskItem{desc: desc, status: "pending"})
-			}
+			result = append(result, taskItem{desc: f.desc, status: "pending"})
 		}
 	}
 
@@ -1151,4 +1186,46 @@ func parseTaskList(content string, oldTasks []taskItem) []taskItem {
 	}
 
 	return result
+}
+
+// readProjectConfigs membaca file konfigurasi project yang umum.
+func readProjectConfigs(allowedDir string) string {
+	// Daftar config file yang akan diperiksa (urut prioritas)
+	configFiles := []struct {
+		path string
+		label string
+	}{
+		{"go.mod", "Go Module"},{"package.json", "Node.js"},{"Cargo.toml", "Rust"},{"pyproject.toml", "Python (pyproject)"},
+		{"requirements.txt", "Python (pip)"},{"Gemfile", "Ruby"},{"composer.json", "PHP"},{"pom.xml", "Maven"},{"build.gradle", "Gradle"},
+		{"Makefile", "Makefile"},{"Dockerfile", "Docker"},{"docker-compose.yml", "Docker Compose"},{"tsconfig.json", "TypeScript"},
+	}
+
+	absDir, err := filepath.Abs(allowedDir)
+	if err != nil {
+		return ""
+	}
+
+	var result strings.Builder
+	for _, cf := range configFiles {
+		fullPath := filepath.Join(absDir, cf.path)
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue // file tidak ada
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		// Batasi panjang konten (max 30 baris)
+		lines := strings.Split(content, "\n")
+		if len(lines) > 30 {
+			lines = lines[:30]
+			lines = append(lines, "... (+ lebih banyak)")
+		}
+		result.WriteString(fmt.Sprintf("=== %s (%s) ===\n", cf.label, cf.path))
+		result.WriteString(strings.Join(lines, "\n"))
+		result.WriteString("\n\n")
+	}
+
+	return strings.TrimRight(result.String(), "\n")
 }
