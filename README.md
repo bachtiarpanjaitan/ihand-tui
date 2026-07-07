@@ -6,6 +6,10 @@ Chat dengan AI langsung dari terminal. Full-screen TUI dengan real-time streamin
 
 ---
 
+<p align="center">
+  <img src="videos/ihandtui.gif" width="800" alt="Ihand TUI Demo">
+</p>
+
 ## Quick Start
 
 ### Install (macOS — Homebrew)
