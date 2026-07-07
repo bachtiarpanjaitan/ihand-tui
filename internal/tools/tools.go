@@ -174,6 +174,111 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (jso
 }
 
 // ---------------------------------------------------------------------------
+// EditFileTool — mengedit baris tertentu dalam file dengan search & replace
+// ---------------------------------------------------------------------------
+
+type EditFileTool struct {
+	allowedDir string
+}
+
+func NewEditFileTool(allowedDir string) *EditFileTool {
+	return &EditFileTool{allowedDir: allowedDir}
+}
+
+func (t *EditFileTool) Name() string { return "edit_file" }
+
+func (t *EditFileTool) Description() string {
+	return "Mengedit baris tertentu dalam file yang sudah ada menggunakan search & replace. " +
+		"Tidak perlu mengirim seluruh konten file — cukup kirim bagian yang ingin diubah. " +
+		"Cari blok teks yang UNIK dalam file, lalu ganti dengan teks baru. " +
+		"search HARUS cocok persis dengan teks yang ada di file (termasuk spasi/indentasi). " +
+		"Gunakan read_file dulu untuk melihat konten file, lalu copy-paste bagian yang ingin diubah. " +
+		"Jauh lebih hemat token daripada write_file untuk file besar. " +
+		"Contoh: edit_file({\"path\": \"main.go\", \"search\": \"fmt.Println(\\\"hello\\\")\", \"replace\": \"fmt.Println(\\\"hi\\\")\"})"
+}
+
+func (t *EditFileTool) InputSchema() *core.JSONSchema {
+	return &core.JSONSchema{
+		Type: "object",
+		Properties: map[string]*core.JSONSchemaProp{
+			"path":    {Type: "string", Description: "Path relatif ke file yang akan diedit"},
+			"search":  {Type: "string", Description: "Teks persis yang akan dicari (case-sensitive, termasuk spasi/indentasi). Harus UNIK dalam file."},
+			"replace": {Type: "string", Description: "Teks pengganti untuk menggantikan search text"},
+		},
+		Required: []string{"path", "search", "replace"},
+	}
+}
+
+func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+	var params struct {
+		Path    string `json:"path"`
+		Search  string `json:"search"`
+		Replace string `json:"replace"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return json.RawMessage(fmt.Sprintf(`{"error": "invalid input: %s"}`, err.Error())), nil
+	}
+
+	if params.Path == "" {
+		return json.RawMessage(`{"error": "path tidak boleh kosong"}`), nil
+	}
+	if params.Search == "" {
+		return json.RawMessage(`{"error": "search text tidak boleh kosong"}`), nil
+	}
+
+	fullPath, err := t.resolvePath(params.Path)
+	if err != nil {
+		return json.RawMessage(fmt.Sprintf(`{"error": "%s"}`, err.Error())), nil
+	}
+
+	// Baca konten file yang ada
+	oldContent, err := os.ReadFile(fullPath)
+	if err != nil {
+		return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca file: %s — %s"}`, params.Path, err.Error())), nil
+	}
+	oldStr := string(oldContent)
+
+	// Hitung jumlah occurences
+	count := strings.Count(oldStr, params.Search)
+	if count == 0 {
+		return json.RawMessage(fmt.Sprintf(`{"error": "search text tidak ditemukan di file %s. Pastikan spasi dan indentasi persis sama. Gunakan read_file untuk melihat konten asli file."}`, params.Path)), nil
+	}
+	if count > 1 {
+		return json.RawMessage(fmt.Sprintf(`{"error": "search text ditemukan %d kali di file %s. Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`, count, params.Path)), nil
+	}
+
+	// Lakukan replace (hanya 1 kali karena sudah dipastikan unik)
+	newContent := strings.Replace(oldStr, params.Search, params.Replace, 1)
+
+	// Tulis file
+	if err := os.WriteFile(fullPath, []byte(newContent), 0644); err != nil {
+		return json.RawMessage(fmt.Sprintf(`{"error": "gagal menulis file: %s"}`, err.Error())), nil
+	}
+
+	info, _ := os.Stat(fullPath)
+	size := int64(0)
+	if info != nil {
+		size = info.Size()
+	}
+
+	// Hitung diff
+	diff := computeDiff(oldStr, newContent)
+
+	// Hitung statistik perubahan
+	oldLines := strings.Count(params.Search, "\n") + 1
+	newLines := strings.Count(params.Replace, "\n") + 1
+
+	result, _ := json.Marshal(map[string]any{
+		"success":       true,
+		"path":          params.Path,
+		"size":          size,
+		"lines_changed": fmt.Sprintf("%d baris diganti dengan %d baris", oldLines, newLines),
+		"diff":          diff,
+	})
+	return json.RawMessage(result), nil
+}
+
+// ---------------------------------------------------------------------------
 // ReadFileTool — membaca konten file dalam direktori yang diizinkan
 // ---------------------------------------------------------------------------
 
@@ -990,6 +1095,10 @@ func (t *CreateDirTool) resolvePath(relPath string) (string, error) {
 }
 
 func (t *WriteFileTool) resolvePath(relPath string) (string, error) {
+	return resolveSafePath(t.allowedDir, relPath)
+}
+
+func (t *EditFileTool) resolvePath(relPath string) (string, error) {
 	return resolveSafePath(t.allowedDir, relPath)
 }
 

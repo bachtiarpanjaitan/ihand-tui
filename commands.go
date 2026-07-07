@@ -20,9 +20,9 @@ var availableCommands = []slashCommand{
 	{name: "/plan", desc: "mode analisis & rencana (read-only)"},
 	{name: "/edit", desc: "mode implementasi & edit file"},
 	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
-	{name: "/team", desc: "mode kolaborasi agen tim (Architect, Developer, Reviewer)"},
 	{name: "/effort", desc: "set AI thinking effort (low/med/high)"},
 	{name: "/self-update", desc: "update ke versi terbaru"},
+	{name: "/settings", desc: "ubah pengaturan (provider, model, API key, dll)"},
 }
 
 func computeSuggestions(input string) []string {
@@ -61,13 +61,12 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 	case "/auto":
 		return m.switchMode(modeAuto)
 
-	case "/team":
-		return m.switchMode(modeTeam)
-
 	case "/clear":
 		m.memory.Clear(m.ctx, m.session)
 		m.messages = nil
 		m.totalTokens = 0
+		m.taskList = nil
+		m.recalcLayout()
 		m.state = stateReady
 		m.err = nil
 		m.textarea.Reset()
@@ -111,9 +110,12 @@ func (m model) handleCommand(input string) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 
+	case "/settings":
+		return m.enterSettings()
+
 	case "/help":
-		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom), /team (kolaborasi)\n" +
-			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan), /effort (set AI depth)\n" +
+		helpText := "Mode: /chat (normal), /plan (analisis), /edit (implementasi), /auto (otonom)\n" +
+			"Lainnya: /exit (keluar), /clear (reset), /stats (statistik), /help (bantuan), /effort (set AI depth), /settings (pengaturan)\n" +
 			"Keys: Enter (kirim), Ctrl+J (baris baru), ↑↓ (scroll), Shift+Tab (ganti mode), Ctrl+L (scroll ke atas)"
 		m.messages = append(m.messages, chatMessage{
 			role:    "system",
@@ -183,7 +185,6 @@ func (m model) switchMode(newMode chatMode) (tea.Model, tea.Cmd) {
 	m.textarea.Placeholder = newMode.Placeholder()
 
 	m.toolActivity = fmt.Sprintf("Mode: %s", newMode.String())
-	m.textarea.Reset()
 
 	content := m.buildConversation()
 	m.viewport.SetContent(content)
@@ -198,7 +199,6 @@ func (m model) switchEffort(newEffort effortLevel) (tea.Model, tea.Cmd) {
 	m.effort = newEffort
 
 	m.toolActivity = fmt.Sprintf("Effort disetel ke: %s", newEffort.String())
-	m.textarea.Reset()
 	m.recalcLayout()
 
 	content := m.buildConversation()

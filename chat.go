@@ -88,13 +88,7 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		}
 
 		var systemPrompt string
-		var currentRole teamRole
-		if mode == modeTeam {
-			currentRole = roleArchitect
-			systemPrompt = buildTeamSystemPrompt(roleArchitect, activeTools)
-		} else {
-			systemPrompt = buildToolSystemPrompt(activeTools, mode, effort)
-		}
+		systemPrompt = buildToolSystemPrompt(activeTools, mode, effort)
 
 		// Auto-context: jika ini pesan pertama dalam sesi, sertakan struktur folder + info ekstensi
 		if len(history) <= 1 {
@@ -145,8 +139,6 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 			toolCalls:       nil,
 			totalTokens:     countTokens(input),
 			startTime:       time.Now(),
-			teamRole:        currentRole,
-			reviewIteration: 0,
 		}
 
 		if streamProvider != nil {
@@ -217,7 +209,6 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	}
 
 	state := msg.state
-	m.currentTeamRole = state.teamRole
 	resp := msg.response
 	if resp == nil {
 		m.retryCount++
@@ -264,142 +255,41 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
 
-	if m.mode == modeTeam && (isFinal || toolCall.name == "") {
-		outputContent := resp.Content
-		if isFinal {
-			outputContent = toolCall.output
-		}
 
-		// Save agent response to memory
-		m.memory.Append(m.ctx, state.session, core.Message{
-			Role: "assistant", Content: resp.Content,
-		})
-
-		switch state.teamRole {
-		case roleArchitect:
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: fmt.Sprintf("**[Architect]** membuat rencana:\n\n%s", outputContent),
-				tokens:  state.totalTokens,
-				timing:  time.Since(state.startTime),
-			})
-
-			// Transition to Developer
-			state.teamRole = roleDeveloper
-			state.activeTools = m.toolList // Developer gets full tools
-			newPrompt := buildTeamSystemPrompt(roleDeveloper, m.toolList)
-			state.messages[0].Content = newPrompt
-
-			state.messages = append(state.messages,
-				core.Message{Role: "assistant", Content: resp.Content},
-				core.Message{Role: "user", Content: fmt.Sprintf("Architect telah membuat rencana. Developer, silakan implementasikan rencana berikut:\n%s", outputContent)},
-			)
-			state.iteration = 0
-			state.startTime = time.Now()
-			m.currentTeamRole = roleDeveloper
-			m.toolActivity = "[Developer] Mulai implementasi..."
-			m.rebuildViewport()
-
-			return tea.Batch(
-				m.textarea.Focus(),
-				continueChatLoop(m.ai, m.ctx, state),
-			), false
-
-		case roleDeveloper:
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: fmt.Sprintf("**[Developer]** menyelesaikan tugas:\n\n%s", outputContent),
-				tokens:  state.totalTokens,
-				timing:  time.Since(state.startTime),
-			})
-
-			// Transition to Reviewer
-			state.teamRole = roleReviewer
-			roTools := getReadOnlyTools(m.toolList)
-			state.activeTools = roTools
-			newPrompt := buildTeamSystemPrompt(roleReviewer, roTools)
-			state.messages[0].Content = newPrompt
-
-			state.messages = append(state.messages,
-				core.Message{Role: "assistant", Content: resp.Content},
-				core.Message{Role: "user", Content: "Developer telah selesai mengimplementasikan kode. Reviewer, silakan review dan tentukan APPROVED atau REJECTED."},
-			)
-			state.iteration = 0
-			state.startTime = time.Now()
-			m.currentTeamRole = roleReviewer
-			m.toolActivity = "[Reviewer] Memeriksa perubahan..."
-			m.rebuildViewport()
-
-			return tea.Batch(
-				m.textarea.Focus(),
-				continueChatLoop(m.ai, m.ctx, state),
-			), false
-
-		case roleReviewer:
-			lowerAns := strings.ToLower(outputContent)
-			isApproved := strings.Contains(lowerAns, "approved") || strings.Contains(lowerAns, "setuju")
-			isRejected := strings.Contains(lowerAns, "rejected") || strings.Contains(lowerAns, "tolak") || strings.Contains(lowerAns, "perbaiki")
-
-			if !isApproved && !isRejected {
-				isApproved = true // default fallback
-			}
-
-			if isApproved || state.reviewIteration >= 2 {
-				var contentText string
-				if isApproved {
-					contentText = fmt.Sprintf("**[Reviewer APPROVED]**:\n\n%s", outputContent)
-				} else {
-					contentText = fmt.Sprintf("**[Reviewer REJECTED - Limit Terlampaui]**:\n\n%s", outputContent)
-				}
-				m.messages = append(m.messages, chatMessage{
-					role:    "assistant",
-					content: contentText,
-					tokens:  state.totalTokens,
-					timing:  time.Since(state.startTime),
-				})
-				m.state = stateReady
-				m.currentTeamRole = roleNone
-				m.toolActivity = "✓ Selesai"
-				m.totalTokens += state.totalTokens
-				m.rebuildViewport()
-				m.statusMsg = ""
-				return m.textarea.Focus(), true
-			}
-
-			// If rejected and iteration < 2
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: fmt.Sprintf("**[Reviewer REJECTED]**:\n\n%s", outputContent),
-				tokens:  state.totalTokens,
-				timing:  time.Since(state.startTime),
-			})
-
-			// Transition back to Developer
-			state.teamRole = roleDeveloper
-			state.activeTools = m.toolList
-			newPrompt := buildTeamSystemPrompt(roleDeveloper, m.toolList)
-			state.messages[0].Content = newPrompt
-
-			state.messages = append(state.messages,
-				core.Message{Role: "assistant", Content: resp.Content},
-				core.Message{Role: "user", Content: fmt.Sprintf("Reviewer menolak implementasi sebelumnya dengan feedback berikut:\n%s\n\nDeveloper, silakan perbaiki kode sesuai feedback tersebut.", outputContent)},
-			)
-			state.iteration = 0
-			state.startTime = time.Now()
-			state.reviewIteration++
-			m.currentTeamRole = roleDeveloper
-			m.toolActivity = "[Developer] Memperbaiki kode..."
-			m.rebuildViewport()
-
-			return tea.Batch(
-				m.textarea.Focus(),
-				continueChatLoop(m.ai, m.ctx, state),
-			), false
-		}
-	}
 
 	// --- Final answer ---
 	if isFinal {
+		// Cek apakah masih ada task yang belum selesai (Edit/Auto mode)
+		if m.mode == modeEdit || m.mode == modeAuto {
+			var incompleteDescs []string
+			for _, t := range m.taskList {
+				if t.status != "completed" {
+					if len(incompleteDescs) < 5 {
+						incompleteDescs = append(incompleteDescs, t.desc)
+					}
+				}
+			}
+			if len(incompleteDescs) > 0 && m.retryCount < maxRetries {
+				m.retryCount++
+				m.statusMsg = fmt.Sprintf("\u23f3 Task tersisa (%d/%d)", m.retryCount, maxRetries)
+				taskList := strings.Join(incompleteDescs, "\n  - ")
+				reminder := "PERINGATAN: Masih ada task yang BELUM selesai:\n" +
+					"  - " + taskList + "\n\n" +
+					"Selesaikan SEMUA task menggunakan write_file() atau edit_file() " +
+					"sebelum memberikan Final Answer."
+				state.messages = append(state.messages,
+					core.Message{Role: "assistant", Content: resp.Content},
+					core.Message{Role: "user", Content: reminder},
+				)
+				state.iteration++
+				m.rebuildViewport()
+				return tea.Batch(
+					m.textarea.Focus(),
+					continueChatLoop(m.ai, m.ctx, state),
+				), false
+			}
+		}
+
 		m.memory.Append(m.ctx, state.session, core.Message{
 			Role: "assistant", Content: resp.Content,
 		})
@@ -583,6 +473,29 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	}
 
 	// --- No tool call detected → treat as direct answer ---
+	// Tapi di mode Edit/Auto, jangan terima jawaban tanpa tool call — paksa retry
+	if (m.mode == modeEdit || m.mode == modeAuto) && m.retryCount < maxRetries {
+		m.retryCount++
+		m.statusMsg = fmt.Sprintf("⚠ Paksa tool call (%d/%d)", m.retryCount, maxRetries)
+		// Tambah pesan sistem ke state yang mengingatkan untuk pakai Action: format
+		reminder := "PERINGATAN: Kamu harus menggunakan Action: format untuk memanggil tools. " +
+			"Jangan berikan jawaban langsung tanpa memanggil write_file/read_file dll.\n" +
+			"Contoh:\n" +
+			"  Action: read_file({\"path\": \"file.go\"})\n" +
+			"  Action: write_file({\"path\": \"file.go\", \"content\": \"...\"})\n" +
+			"Setelah semua tool selesai, berikan Final Answer."
+		state.messages = append(state.messages,
+			core.Message{Role: "assistant", Content: resp.Content},
+			core.Message{Role: "user", Content: reminder},
+		)
+		state.iteration++
+		m.rebuildViewport()
+		return tea.Batch(
+			m.textarea.Focus(),
+			continueChatLoop(m.ai, m.ctx, state),
+		), false
+	}
+
 	m.memory.Append(m.ctx, state.session, core.Message{
 		Role: "assistant", Content: resp.Content,
 	})
@@ -604,18 +517,26 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 // needsPermission returns true jika tool memerlukan konfirmasi user sebelum dieksekusi.
 func needsPermission(name string) bool {
 	switch name {
-	case "write_file", "read_file", "create_directory", "exec":
+	case "write_file", "edit_file", "read_file", "create_directory", "exec":
 		return true
 	default:
 		return false
 	}
 }
 
-// rebuildViewport is a helper to re-render the viewport after state changes.
+// rebuildViewport refreshes the viewport content and auto-scrolls to bottom.
+// Use for state transitions (new message, response complete, etc.).
 func (m *model) rebuildViewport() {
 	content := m.buildConversation()
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
+}
+
+// refreshViewport updates the viewport content WITHOUT auto-scrolling.
+// Use during streaming so the user can scroll freely without being interrupted.
+func (m *model) refreshViewport() {
+	content := m.buildConversation()
+	m.viewport.SetContent(content)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +647,21 @@ func formatToolDisplay(toolName, input, output string) string {
 			}
 			if success || strings.Contains(output, "berhasil") {
 				if previewDiff != "" {
-					return fmt.Sprintf("%s \u2014 %d baris\n", path, size) + previewDiff
+					// Hitung baris dari diff untuk tampilan yang akurat
+					diffLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
+					lineCount := 0
+					for _, l := range diffLines {
+						if strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") {
+							lineCount++
+						}
+					}
+					// Batasi preview diff \u2014 untuk file baru, jangan tampilkan full konten
+					const maxPreviewLines = 15
+					shortDiff := previewDiff
+					if len(diffLines) > maxPreviewLines {
+						shortDiff = strings.Join(diffLines[:maxPreviewLines], "\n") + "\n..."
+					}
+					return fmt.Sprintf("%s \u2014 %d byte (%d baris diubah)\n%s", path, size, lineCount, shortDiff)
 				}
 				// Fallback: content preview (jika diff kosong)
 				c := extractField(input, `"content"`)
@@ -1027,48 +962,62 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("- Akhiri dengan Final Answer: berisi rencana yang jelas\n\n")
 
 	case modeEdit:
-		b.WriteString("Kamu adalah AI asisten dalam MODE EDIT. ")
-		b.WriteString("Tugasmu adalah mengimplementasikan perubahan secara LANGSUNG. ")
+		b.WriteString("Kamu adalah AI asisten dalam MODE EDIT.\n")
+		b.WriteString("Tugasmu adalah mengimplementasikan perubahan secara LANGSUNG.\n")
 		b.WriteString("Jangan bertanya — langsung kerjakan.\n\n")
-		b.WriteString("ATURAN KRITIS:\n")
-		b.WriteString("- WAJIB pakai write_file untuk SETIAP perubahan file\n")
-		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah diubah\" tanpa Action: write_file\n")
-		b.WriteString("- HANYA baca file yang relevan dengan perubahan — jangan baca seluruh codebasen")
-		b.WriteString("- Jika perubahan kecil (misal: nambah function, edit 1 baris), baca secukupnya sajan")
-		b.WriteString("- Gunakan read_file_lines untuk baca baris tertentu jika sudah tahu path dan lokasinyan")
-		b.WriteString("- write_file SELALU menulis KONTEN FILE LENGKAP (bukan patch/diff) — tulis ulang seluruh filen")
-		b.WriteString("- Dulang ulang kebiasaan: jangan baca file yang sudah jelas isinyan")
-		b.WriteString("- Format: Action: write_file({\"path\": \"...\", \"content\": \"...\"})\n")
-		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap seperti cmd/api/handler.go\n")
-		b.WriteString("- Gunakan create_directory jika ingin membuat folder kosong terlebih dahulu\n")
-		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis SEMUA file di root direktori (path langsung, tanpa subfolder project_name/)\n")
-		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
-		b.WriteString("- Jika user minta project di folder tertentu: buat folder dulu, lalu tulis file di dalamnya\n")
-		b.WriteString("  Contoh: create_directory({\"path\": \"myproject\"}) lalu write_file({\"path\": \"myproject/main.go\", \"content\": \"...\"})\n")
-		b.WriteString("- Akhiri dengan Final Answer: konfirmasi apa yang SUDAH diubah via tool\n\n")
-
-	case modeAuto:
-		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM. ")
-		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user. ")
-		b.WriteString("Rencanakan sendiri langkah-langkahnya dan eksekusi berurutan.\n\n")
-		b.WriteString("ATURAN KRITIS:\n")
-		b.WriteString("- HANYA baca file yang relevan — jangan baca seluruh codebase untuk perubahan keciln")
-		b.WriteString("- Jika sudah tahu isi file, langsung write tanpa baca ulangn")
-		b.WriteString("- write_file SELALU tulis KONTEN FILE LENGKAP (bukan patch)n")
-		b.WriteString("- WAJIB gunakan tools (read_file, write_file, list_files, create_directory) untuk setiap aksi\n")
-		b.WriteString("- JANGAN PERNAH mengklaim \"file sudah dibuat/diubah\" tanpa Action: write_file\n")
-		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap\n")
-		b.WriteString("- Gunakan create_directory untuk membuat folder eksplisit (opsional, karena write_file auto-create)\n")
-		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis SEMUA file di root direktori (path tanpa subfolder)\n")
-		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
-		b.WriteString("  JANGAN buat subfolder project_name/ — cukup tulis file langsung di root.\n")
-		b.WriteString("- Jika user minta project di folder tertentu, gunakan path relatif dari root.\n")
-		b.WriteString("  Contoh: write_file({\"path\": \"myproject/main.go\", \"content\": \"...\"})\n")
-		b.WriteString("- Gunakan tools secara otonom dan berurutan\n")
-		b.WriteString("- Eksekusi multi-step tanpa bertanya ke user\n")
-		b.WriteString("- Jika gagal di satu langkah, coba alternatif lain\n")
-		b.WriteString("- Akhiri dengan Final Answer: ringkasan apa yang SUDAH dikerjakan via tools\n\n")
-
+		b.WriteString("!!! INSTRUKSI WAJIB – BACA DENGAN SEKSAMA !!!\n")
+		b.WriteString("Kamu HARUS menggunakan Action: format untuk SETIAP tool call.\n")
+		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
+		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
+		b.WriteString("\nLangkah:\n")
+		b.WriteString("1. BUAT PLAN: daftar file dengan format [ ] checklist\n")
+		b.WriteString("2. KERJAKAN: SATU file per write_file(), centang [x] tiap selesai\n")
+		b.WriteString("3. UPDATE: tulis ulang checklist setelah tiap file\n")
+		b.WriteString("4. REVIEW: exec() untuk build/check\n")
+		b.WriteString("5. Final Answer hanya jika SEMUA file selesai\n\n")
+		b.WriteString("\nContoh:\n")
+		b.WriteString("  - [ ] Buat index.html\n")
+		b.WriteString("  Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Buat index.html\n")
+		b.WriteString("  - [ ] Buat style.css\n")
+		b.WriteString("  Action: write_file({\"path\": \"style.css\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Buat style.css\n")
+		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
+		b.WriteString("  Final Answer: Semua perubahan selesai.\n\n")
+		b.WriteString("ATURAN:\n")
+		b.WriteString("- Tulis PLAN checklist di awal (gunakan [ ])\n")
+		b.WriteString("- SATU file per write_file()\n")
+		b.WriteString("- Centang [x] setiap selesai\n")
+		b.WriteString("- exec() untuk build/check\n")
+		b.WriteString("- Final Answer hanya jika semua checklist tercentang\n\n")
+		case modeAuto:
+		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM.\n")
+		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user.\n")
+		b.WriteString("!!! INSTRUKSI WAJIB – BACA DENGAN SEKSAMA !!!\n")
+		b.WriteString("Kamu HARUS menggunakan Action: format untuk SETIAP tool call.\n")
+		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
+		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
+		b.WriteString("\nLangkah:\n")
+		b.WriteString("1. BUAT PLAN: daftar file dengan format [ ] checklist\n")
+		b.WriteString("2. KERJAKAN: SATU file per write_file(), centang [x] tiap selesai\n")
+		b.WriteString("3. UPDATE: tulis ulang checklist setelah tiap file\n")
+		b.WriteString("4. REVIEW: exec() untuk build/check\n")
+		b.WriteString("5. Final Answer hanya jika SEMUA file selesai\n\n")
+		b.WriteString("\nContoh:\n")
+		b.WriteString("  - [ ] Buat index.html\n")
+		b.WriteString("  Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Buat index.html\n")
+		b.WriteString("  - [ ] Buat style.css\n")
+		b.WriteString("  Action: write_file({\"path\": \"style.css\", \"content\": \"...\"})\n")
+		b.WriteString("  - [x] Buat style.css\n")
+		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
+		b.WriteString("  Final Answer: Semua file siap.\n\n")
+		b.WriteString("ATURAN:\n")
+		b.WriteString("- Tulis PLAN checklist di awal (gunakan [ ])\n")
+		b.WriteString("- SATU file per write_file()\n")
+		b.WriteString("- Centang [x] setiap selesai\n")
+		b.WriteString("- exec() untuk build/check\n")
+		b.WriteString("- Final Answer hanya jika semua checklist tercentang\n\n")
 	default:
 		b.WriteString("Kamu adalah AI asisten dalam MODE CHAT (percakapan normal). ")
 		b.WriteString("Bantu jawab pertanyaan, analisis kode, dan diskusi.\n\n")
@@ -1114,82 +1063,92 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 	return b.String()
 }
 
-func buildTeamSystemPrompt(role teamRole, toolList []tools.Tool) string {
-	var b strings.Builder
-	switch role {
-	case roleArchitect:
-		b.WriteString("Kamu adalah ARCHITECT dalam tim agen AI kolaboratif.\n")
-		b.WriteString("Tugasmu adalah menganalisis permintaan user, memeriksa codebase yang ada, dan merumuskan rencana implementasi yang matang.\n\n")
-		b.WriteString("ATURAN:\n")
-		b.WriteString("- Gunakan read_file, list_files, atau browse untuk memahami kode.\n")
-		b.WriteString("- Jangan mencoba menulis atau mengedit file (write_file tidak tersedia untukmu).\n")
-		b.WriteString("- Buatlah rencana yang sangat terperinci dan jelaskan file mana saja yang perlu dibuat/diubah.\n")
-		b.WriteString("- Akhiri tugasmu dengan menulis Final Answer: berisi rencana implementasi yang siap diberikan kepada Developer.\n")
-	case roleDeveloper:
-		b.WriteString("Kamu adalah DEVELOPER dalam tim agen AI kolaboratif.\n")
-		b.WriteString("Tugasmu adalah merealisasikan rencana implementasi yang dibuat oleh Architect.\n\n")
-		b.WriteString("ATURAN:\n")
-		b.WriteString("- Gunakan write_file untuk menulis atau mengedit file.\n")
-		b.WriteString("- write_file OTOMATIS membuat parent folder jika belum ada — cukup tulis path lengkap.\n")
-		b.WriteString("- Gunakan create_directory untuk membuat folder secara eksplisit (opsional).\n")
-		b.WriteString("- Gunakan read_file untuk membaca file jika diperlukan.\n")
-		b.WriteString("- Tulis kode yang rapi, lengkap, dan fungsional.\n")
-		b.WriteString("- Jangan berasumsi file sudah diubah tanpa memanggil write_file.\n")
-		b.WriteString("- Untuk MEMBUAT PROJECT BARU: tulis file langsung di root direktori (jangan buat subfolder project_name/)\n")
-		b.WriteString("  Contoh: write_file({\"path\": \"main.go\", \"content\": \"...\"})\n")
-		b.WriteString("- Setelah selesai melakukan semua perubahan kode, akhiri dengan Final Answer: berisi ringkasan file-file yang telah kamu ubah/buat beserta detail perubahannya agar bisa direview.\n")
-	case roleReviewer:
-		b.WriteString("Kamu adalah REVIEWER/TESTER dalam tim agen AI kolaboratif.\n")
-		b.WriteString("Tugasmu adalah memeriksa hasil pekerjaan Developer untuk memastikan bahwa kodenya benar, sesuai rencana Architect, dan bebas bug.\n\n")
-		b.WriteString("ATURAN:\n")
-		b.WriteString("- Baca file yang diubah oleh Developer menggunakan read_file.\n")
-		b.WriteString("- Evaluasi kode secara kritis (cek logika, error handling, edge cases).\n")
-		b.WriteString("- Jika kode sudah benar dan sesuai, akhiri dengan menulis Final Answer yang dimulai dengan kata 'APPROVED:'. Contoh: 'APPROVED: Kode sudah sesuai...'\n")
-		b.WriteString("- Jika ada bug, kesalahan, atau ketidaksesuaian rencana, akhiri dengan menulis Final Answer yang dimulai dengan kata 'REJECTED:'. Berikan feedback detail tentang apa yang perlu diperbaiki. Contoh: 'REJECTED: Di file main.go, fungsi X belum ditambahkan...'\n")
-	}
-
-	if len(toolList) > 0 {
-		b.WriteString("\nFORMAT MEMANGGIL TOOLS:\n")
-		b.WriteString("Action: nama_tool({\"key\": \"value\"})\n\n")
-		b.WriteString("FORMAT JAWABAN AKHIR:\n")
-		b.WriteString("Final Answer: jawaban akhir Anda\n\n")
-		b.WriteString("Tools yang tersedia untuk peranmu saat ini:\n")
-		for _, t := range toolList {
-			schema, _ := json.Marshal(t.InputSchema())
-			b.WriteString(fmt.Sprintf("- %s: %s\n  Schema: %s\n\n", t.Name(), t.Description(), string(schema)))
-		}
-	} else {
-		b.WriteString("\nTidak ada tools yang tersedia. Jawab langsung dengan Final Answer.\n\n")
-	}
-
-	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk komunikasi antar tim dan Final Answer.")
-	return b.String()
-}
-
-func getReadOnlyTools(allTools []tools.Tool) []tools.Tool {
-	var ro []tools.Tool
-	for _, t := range allTools {
-		switch t.Name() {
-		case "read_file", "list_files", "browse",
-			"find_files", "search_text", "read_file_lines":
-			ro = append(ro, t)
-		}
-	}
-	return ro
-}
-
 // isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
 func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
-	if toolName != "write_file" && toolName != "create_directory" && toolName != "exec" {
+	if toolName != "write_file" && toolName != "edit_file" && toolName != "create_directory" && toolName != "exec" {
 		return false
 	}
-	return mode == modeAuto || mode == modeEdit || mode == modeTeam || trustWrite
+	return mode == modeAuto || mode == modeEdit || trustWrite
 }
 
 // isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
 func isToolAutoTrustedMode(mode chatMode, toolName string) bool {
-	if toolName != "write_file" && toolName != "create_directory" && toolName != "exec" {
+	if toolName != "write_file" && toolName != "edit_file" && toolName != "create_directory" && toolName != "exec" {
 		return false
 	}
-	return mode == modeAuto || mode == modeEdit || mode == modeTeam
+	return mode == modeAuto || mode == modeEdit
+}
+
+// parseTaskList extracts checklist items from LLM streaming content.
+// Parses lines like "- [ ] desc" (pending) and "- [x] desc" (completed).
+// Deduplicates: if same desc appears as [ ] then [x], keeps the LATEST status.
+// Validates: a task first seen as [x] (never seen as [ ]) stays pending.
+func parseTaskList(content string, oldTasks []taskItem) []taskItem {
+	if content == "" {
+		return oldTasks
+	}
+
+	// Scan all lines and collect latest status per description
+	type foundItem struct {
+		desc   string
+		status string
+	}
+	foundMap := make(map[string]string) // desc → latest status
+
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- [ ] ") {
+			desc := strings.TrimPrefix(trimmed, "- [ ] ")
+			foundMap[desc] = "pending"
+		} else if strings.HasPrefix(trimmed, "- [x] ") {
+			desc := strings.TrimPrefix(trimmed, "- [x] ")
+			foundMap[desc] = "completed"
+		}
+	}
+
+	if len(foundMap) == 0 {
+		return oldTasks
+	}
+
+	// Build oldMap for status preservation
+	oldMap := make(map[string]string)
+	for _, t := range oldTasks {
+		oldMap[t.desc] = t.status
+	}
+
+	// Merge: dedup foundMap with preservation from oldMap
+	var result []taskItem
+	for desc, latestStatus := range foundMap {
+		oldStatus, wasInOld := oldMap[desc]
+
+		if wasInOld {
+			// Known task: upgrade status but never downgrade
+			if latestStatus == "completed" || oldStatus == "completed" {
+				result = append(result, taskItem{desc: desc, status: "completed"})
+			} else {
+				// Preserve existing status (in_progress or pending)
+				result = append(result, taskItem{desc: desc, status: oldStatus})
+			}
+		} else {
+			// New task: if it first appears as [x], treat as pending
+			// (LLM might be summarizing, not reporting real progress)
+			if latestStatus == "completed" {
+				result = append(result, taskItem{desc: desc, status: "pending"})
+			} else {
+				result = append(result, taskItem{desc: desc, status: "pending"})
+			}
+		}
+	}
+
+	// Tandai task pending pertama sebagai "in_progress"
+	markedInProgress := false
+	for i := range result {
+		if result[i].status == "pending" && !markedInProgress {
+			result[i].status = "in_progress"
+			markedInProgress = true
+		}
+	}
+
+	return result
 }

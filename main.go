@@ -51,12 +51,16 @@ func ensureConfig(path string) {
 		return
 	}
 	defaultJSON := `{
-  "llm": {
-    "provider": "ollama",
-    "model": "llama3.2",
-    "api_key": "",
-    "base_url": ""
-  },
+  "profiles": [
+    {
+      "name": "Ollama Local",
+      "provider": "ollama",
+      "model": "llama3.2",
+      "api_key": "",
+      "base_url": "http://localhost:11434"
+    }
+  ],
+  "active_profile": 0,
   "app": {
     "allowed_dir": ".",
     "session": "default"
@@ -101,29 +105,30 @@ func main() {
 	}
 
 	var llmOpts []llm.Option
-	llmOpts = append(llmOpts, llm.WithModel(cfg.LLM.Model))
-	if cfg.LLM.APIKey != "" {
-		llmOpts = append(llmOpts, llm.WithAPIKey(cfg.LLM.APIKey))
+	activeCfg := cfg.ActiveConfig()
+	llmOpts = append(llmOpts, llm.WithModel(activeCfg.Model))
+	if activeCfg.APIKey != "" {
+		llmOpts = append(llmOpts, llm.WithAPIKey(activeCfg.APIKey))
 	}
-	if cfg.LLM.BaseURL != "" {
-		llmOpts = append(llmOpts, llm.WithBaseURL(cfg.LLM.BaseURL))
+	if activeCfg.BaseURL != "" {
+		llmOpts = append(llmOpts, llm.WithBaseURL(activeCfg.BaseURL))
 	}
 
 	store := memory.NewInMemoryStore()
 
 	ai, err := ihandai.New(
-		ihandai.WithLLM(cfg.LLM.Provider, llmOpts...),
+		ihandai.WithLLM(activeCfg.Provider, llmOpts...),
 		ihandai.WithMemory(store),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM provider %q: %v\n", cfg.LLM.Provider, err)
+		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM provider %q: %v\n", activeCfg.Provider, err)
 		os.Exit(1)
 	}
 	defer ai.Close()
 
-	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", cfg.LLM.Provider, cfg.LLM.Model)
+	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", activeCfg.Provider, activeCfg.Model)
 
-	m := initModel(ai, store, cfg.LLM.Provider, cfg.LLM.Model, cfg.App.Session, allowedDir)
+	m := initModel(ai, store, activeCfg.Provider, activeCfg.Model, cfg.App.Session, allowedDir, *configPath)
 
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {

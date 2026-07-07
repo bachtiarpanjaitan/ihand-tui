@@ -83,7 +83,15 @@ func formatStreamForDisplay(content string) string {
 		}
 	}
 
-	// Jika tidak ada tool call, tampilkan indikator berpikir
+	// Jika tidak ada tool call, tampilkan konten streaming mentah (terbatas)
+	// agar user bisa melihat proses berpikir AI secara real-time
+	display := strings.TrimSpace(content)
+	if len(display) > 200 {
+		display = display[:200] + "..."
+	}
+	if display != "" {
+		return display
+	}
 	return ""
 }
 
@@ -120,6 +128,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.done {
 			m.streamingContent += msg.content
 			m.messages[len(m.messages)-1].content = formatStreamForDisplay(m.streamingContent)
+			// Update estimated tokens live during streaming
+			m.totalTokens = msg.state.totalTokens + countTokens(m.streamingContent)
+			// Parse task checklist dari streaming content
+			oldCount := len(m.taskList)
+			m.taskList = parseTaskList(m.streamingContent, m.taskList)
+			if len(m.taskList) != oldCount {
+				m.recalcLayout() // sesuaikan ukuran viewport untuk task panel
+			}
 
 			// Early tool execution: eksekusi tool auto-trusted langsung saat streaming
 			if m.earlyTool.toolName == "" {
@@ -152,7 +168,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							content: "",
 							timing:  0,
 						})
-						m.rebuildViewport()
+						m.refreshViewport()
 					}
 				}
 			}
@@ -161,7 +177,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Throttle UI rendering to max ~20 FPS (50ms) to avoid lag
 			now := time.Now()
 			if now.Sub(m.lastStreamRender) > 50*time.Millisecond {
-				m.rebuildViewport()
+				m.refreshViewport()
 				m.lastStreamRender = now
 			}
 			return m, waitForStreamChunk(msg.ch, msg.state)
@@ -225,11 +241,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
 
 			// Status message (bottom bar)
-			if m.mode == modeTeam && m.currentTeamRole != roleNone {
-				m.statusMsg = fmt.Sprintf("[%s] %s Memproses", m.currentTeamRole.String(), spinner)
-			} else {
-				m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
-			}
+			m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
 
 			// Animate spinner on the streaming assistant message (not tool results)
 			for i := len(m.messages) - 1; i >= 0; i-- {
@@ -248,6 +260,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.messages[i].content = spinner + " " + base
 					}
+					// Refresh viewport agar perubahan langsung terlihat
+					m.refreshViewport()
 					break
 				}
 			}
@@ -274,6 +288,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // ---------------------------------------------------------------------------
 
 func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Delegate all key handling to settings when in settings mode
+	if m.state == stateSettings {
+		return handleSettingsKey(m, msg)
+	}
+
 	switch msg.String() {
 
 	case "esc":
@@ -298,7 +317,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+s":
-		return m, copyConversation(&m)
+			return m, copyConversation(&m)
 
 	case "shift+enter", "ctrl+j":
 		if m.state == stateThinking {
@@ -421,12 +440,9 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			content: input,
 			tokens:  inputTokens,
 		})
+		m.totalTokens += inputTokens // tambahkan input token ke total
 		m.state = stateThinking
-		if m.mode == modeTeam {
-			m.currentTeamRole = roleArchitect
-		} else {
-			m.currentTeamRole = roleNone
-		}
+
 		m.statusMsg = ""
 		m.tickCount = 0
 		m.toolActivity = ""
@@ -435,6 +451,8 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textarea.Blur()
 		// Clear file mentions after sending
 		m.fileMentions = make(map[string]string)
+		m.taskList = nil
+		m.recalcLayout()
 
 		content := m.buildConversation()
 		m.viewport.SetContent(content)
@@ -557,8 +575,6 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case modeEdit:
 			return m.switchMode(modeAuto)
 		case modeAuto:
-			return m.switchMode(modeTeam)
-		case modeTeam:
 			return m.switchMode(modeChat)
 		}
 		return m, nil
@@ -604,7 +620,7 @@ func (m model) handleTrustApprove() (tea.Model, tea.Cmd) {
 	m.trustConfirmed = true
 	m.trustWrite = true
 	m.state = stateReady
-	m.toolActivity = "✓ Direktori dipercaya — mode auto/edit/team dapat menulis file langsung"
+	m.toolActivity = "✓ Direktori dipercaya — mode auto/edit dapat menulis file langsung"
 	m.recalcLayout()
 	m.rebuildViewport()
 	return m, nil

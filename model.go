@@ -30,7 +30,41 @@ const (
 	stateConfirming
 	stateSelectingEffort
 	stateTrustPrompt
+	stateSettings
 )
+
+// SettingsFieldType identifies which setting field is being edited.
+type settingsField int
+
+const (
+	settingsProfile settingsField = iota
+	settingsProvider
+	settingsModel
+	settingsAPIKey
+	settingsBaseURL
+	settingsAllowedDir
+	settingsSession
+	settingsFieldCount // total number of fields
+)
+
+func (s settingsField) String() string {
+	switch s {
+	case settingsProvider:
+		return "Provider"
+	case settingsModel:
+		return "Model"
+	case settingsAPIKey:
+		return "API Key"
+	case settingsBaseURL:
+		return "Base URL"
+	case settingsAllowedDir:
+		return "Allowed Dir"
+	case settingsSession:
+		return "Session"
+	default:
+		return "Unknown"
+	}
+}
 
 type chatMode int
 
@@ -39,7 +73,6 @@ const (
 	modePlan
 	modeEdit
 	modeAuto
-	modeTeam
 )
 
 func (m chatMode) String() string {
@@ -52,8 +85,6 @@ func (m chatMode) String() string {
 		return "Edit"
 	case modeAuto:
 		return "Auto"
-	case modeTeam:
-		return "Team"
 	default:
 		return "Chat"
 	}
@@ -69,8 +100,6 @@ func (m chatMode) Color() string {
 		return "76"
 	case modeAuto:
 		return "196"
-	case modeTeam:
-		return "99" // Purple
 	default:
 		return "39"
 	}
@@ -86,48 +115,10 @@ func (m chatMode) Placeholder() string {
 		return "Apa yang ingin diubah?..."
 	case modeAuto:
 		return "Apa yang ingin dikerjakan?..."
-	case modeTeam:
-		return "Tugas kompleks apa yang ingin dikerjakan bersama tim?..."
 	default:
 		return "Ketik pesan..."
 	}
 }
-
-type teamRole int
-
-const (
-	roleNone teamRole = iota
-	roleArchitect
-	roleDeveloper
-	roleReviewer
-)
-
-func (r teamRole) String() string {
-	switch r {
-	case roleArchitect:
-		return "Architect"
-	case roleDeveloper:
-		return "Developer"
-	case roleReviewer:
-		return "Reviewer"
-	default:
-		return ""
-	}
-}
-
-func (r teamRole) Color() string {
-	switch r {
-	case roleArchitect:
-		return "99" // Purple
-	case roleDeveloper:
-		return "76" // Green
-	case roleReviewer:
-		return "214" // Yellow
-	default:
-		return "243" // Gray
-	}
-}
-
 type effortLevel int
 
 const (
@@ -183,6 +174,12 @@ type chatMessage struct {
 	timing  time.Duration
 }
 
+// taskItem represents one item in the plan/task checklist.
+type taskItem struct {
+	desc   string
+	status string // "pending", "in_progress", "completed", "error"
+}
+
 type llmResponseMsg struct {
 	content   string
 	tokens    int
@@ -216,8 +213,6 @@ type chatLoopState struct {
 	toolCalls       []toolCallRecord
 	totalTokens     int
 	startTime       time.Time
-	teamRole        teamRole
-	reviewIteration int
 }
 
 // chatStepResultMsg is returned by each async LLM call step.
@@ -272,7 +267,6 @@ type model struct {
 	mode            chatMode
 	effort          effortLevel
 	tempEffort      effortLevel
-	currentTeamRole teamRole
 	statusMsg       string
 	toolActivity    string // aktivitas tool terakhir (ditampilkan di atas input)
 	pendingTool     reActTool
@@ -296,6 +290,10 @@ type model struct {
 	tickCount    int  // animation counter for status dots
 	retryCount   int  // hitungan retry untuk error LLM
 
+	// Task list (plan panel)
+	taskList    []taskItem // daftar task dari plan checklist
+	taskUpdated bool       // true jika taskList berubah
+
 	// Streaming state
 	streamingContent string        // accumulated text from stream chunks
 	earlyTool        earlyToolExec // tool yang sudah dieksekusi saat streaming
@@ -304,13 +302,24 @@ type model struct {
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
+
+	// Settings state
+	configPath          string        // path ke file settings.json
+	currentProfile      int           // index profil yang aktif
+	settingsCurrentField settingsField // field yang sedang dipilih di settings
+	settingsEditMode     bool          // true saat sedang mengedit nilai field
+	settingsEditBuffer   string        // buffer untuk input nilai baru
+	settingsProfileSel   int           // index yang dipilih di daftar profil
+	settingsShowProfileList bool      // true saat menampilkan daftar profil
+
+		settingsConfig *Config // pointer ke config saat di settings mode (nil jika tidak di settings)
 }
 
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
-func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir string) model {
+func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir, configPath string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Ketik pesan..."
 	ta.SetHeight(3)
@@ -335,6 +344,7 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 
 	mkdirTool := toolspkg.NewCreateDirTool(allowedDir)
 	writeTool := toolspkg.NewWriteFileTool(allowedDir)
+	editTool := toolspkg.NewEditFileTool(allowedDir)
 	readTool := toolspkg.NewReadFileTool(allowedDir)
 	listTool := toolspkg.NewListFilesTool(allowedDir)
 	browseTool := toolspkg.NewBrowseTool()
@@ -342,8 +352,8 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 	searchTextTool := toolspkg.NewSearchTextTool(allowedDir)
 	readFileLinesTool := toolspkg.NewReadFileLinesTool(allowedDir)
 	execTool := toolspkg.NewExecTool(allowedDir)
-	toolList := []tools.Tool{mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool}
-	ai.SetTools(mkdirTool, writeTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool)
+	toolList := []tools.Tool{mkdirTool, writeTool, editTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool}
+	ai.SetTools(mkdirTool, writeTool, editTool, readTool, listTool, browseTool, findFilesTool, searchTextTool, readFileLinesTool, execTool)
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))
 	vp.SoftWrap = true
@@ -362,18 +372,18 @@ func initialModel(ai *ihandai.Client, store memory.ConversationStore, provider, 
 		state:           stateReady,
 		mode:            modeAuto,
 		effort:          effortMedium,
-		currentTeamRole: roleNone,
 		allowedDir:      allowedDir,
 		toolList:        toolList,
 		mouseEnabled:    true,
 		selSugg:         -1,
 		fileMentions:    make(map[string]string),
 		allowedDirAbs:   resolveAllowedDir(allowedDir),
+		configPath:      configPath,
 	}
 }
 
-func initModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir string) model {
-	m := initialModel(ai, store, provider, modelName, session, allowedDir)
+func initModel(ai *ihandai.Client, store memory.ConversationStore, provider, modelName, session, allowedDir, configPath string) model {
+	m := initialModel(ai, store, provider, modelName, session, allowedDir, configPath)
 
 	// Check if this directory has been trusted before
 	absDir := m.allowedDirAbs

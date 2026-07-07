@@ -3,10 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
-	glamour "charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
 
@@ -48,23 +46,8 @@ func (m *model) renderFull() string {
 		Padding(0, 1).
 		Render(m.effort.Tag())
 
-	// Team role tag (only shown when in modeTeam with an active agent)
-	var teamTag string
-	if m.mode == modeTeam && m.currentTeamRole != roleNone {
-		teamTag = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color(m.currentTeamRole.Color())).
-			Bold(true).
-			Padding(0, 1).
-			Render(m.currentTeamRole.String())
-	}
-
 	headerLeft := headerStyle.Render(fmt.Sprintf("Ihand TUI %s · %s/%s", version, m.provider, m.modelName))
-	if teamTag != "" {
-		headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, teamTag, headerLeft)
-	} else {
-		headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, headerLeft)
-	}
+	headerLeft = lipgloss.JoinHorizontal(lipgloss.Top, modeTag, effortTag, headerLeft)
 	sessionInfo := lipgloss.NewStyle().
 		Background(lipgloss.Color("234")).
 		Foreground(dimColor).
@@ -90,9 +73,8 @@ func (m *model) renderFull() string {
 
 	var status string
 	if m.state == stateThinking {
-		// Minimal status during thinking — main indicator is in the chatbox area
 		if len(m.messages) > 0 {
-			status = fmt.Sprintf(" ~%d total tokens  |  %d messages",
+			status = fmt.Sprintf(" ~%d token (%d pesan)",
 				m.totalTokens, len(m.messages))
 		} else {
 			status = ""
@@ -113,7 +95,6 @@ func (m *model) renderFull() string {
 				status = " Ready — ketik pesan untuk memulai"
 			}
 		}
-		// Mouse mode indicator
 		if m.mouseEnabled {
 			status += dimStyle.Render(" mouse on (Ctrl+E)")
 		}
@@ -126,23 +107,35 @@ func (m *model) renderFull() string {
 
 	var sug string
 	if len(m.suggestions) > 0 {
-		sug = m.renderSuggestions()
+		sug = renderSuggestions(m)
 	}
 
 	var bottom string
 	if m.state == stateSelectingEffort {
-		bottom = m.renderEffortSelector()
+		bottom = renderEffortSelector(m)
 	} else if m.state == stateConfirming {
-		bottom = m.renderConfirmPrompt()
+		bottom = renderConfirmPrompt(m)
 	} else if m.state == stateThinking {
-		bottom = m.renderThinkingIndicator()
+		bottom = renderThinkingIndicator(m)
 	} else if m.state == stateTrustPrompt {
-		bottom = m.renderTrustPrompt()
+		bottom = renderTrustPrompt(m)
+	} else if m.state == stateSettings {
+		bottom = renderSettings(m)
 	} else {
 		input := m.textarea.View()
 		bottom = input
 		if sug != "" {
 			bottom = lipgloss.JoinVertical(lipgloss.Left, sug, bottom)
+		}
+	}
+
+	// Prepend task panel to bottom area when tasks exist
+	if len(m.taskList) > 0 {
+		if bottom != "" {
+			taskPanel := renderTaskPanel(m)
+			bottom = lipgloss.JoinVertical(lipgloss.Left, taskPanel, bottom)
+		} else {
+			bottom = renderTaskPanel(m)
 		}
 	}
 
@@ -157,491 +150,396 @@ func (m *model) renderFull() string {
 }
 
 // ---------------------------------------------------------------------------
-// Thinking indicator (replaces chatbox while AI is working)
+// Stub renderers needed for compilation
+// These will be properly implemented later.
 // ---------------------------------------------------------------------------
 
-func (m *model) renderThinkingIndicator() string {
-	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
-
-	accentColor := lipgloss.Color("214")
-	if m.mode == modeTeam && m.currentTeamRole != roleNone {
-		accentColor = lipgloss.Color(m.currentTeamRole.Color())
-	}
-
-	spinnerStyle := lipgloss.NewStyle().
-		Foreground(accentColor).
-		Bold(true)
-
-	var label string
-	if m.mode == modeTeam && m.currentTeamRole != roleNone {
-		label = fmt.Sprintf("[%s] ", m.currentTeamRole.String())
-	}
-
-	var detail string
-	if m.toolActivity != "" {
-		detail = m.toolActivity
-	} else {
-		detail = "Memproses permintaan..."
-	}
-
-	line := fmt.Sprintf("  %s %s%s",
-		spinnerStyle.Render(spinner),
-		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(label),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(detail),
-	)
-
-	// Pad to full width and add empty lines to match textarea height
-	w := lipgloss.Width(line)
-	if m.width > w {
-		line = line + strings.Repeat(" ", m.width-w)
-	}
-	return line + "\n\n"
-}
-
-// ---------------------------------------------------------------------------
-// Conversation rendering
-// ---------------------------------------------------------------------------
-
-func (m *model) buildConversation() string {
-	// Lebar untuk pesan biasa (dengan indentasi)
-	contentWidth := m.width - 6
-	if contentWidth < 40 {
-		contentWidth = 40
-	}
-
-	// Lebar untuk welcome box = lebar viewport (tanpa indentasi)
-	boxWidth := m.width
-	if boxWidth < 40 {
-		boxWidth = 40
-	}
-
-	if len(m.messages) == 0 {
-		return welcomeMessage(m.provider, m.modelName, boxWidth)
-	}
-
-	var sb strings.Builder
-
-	for i, msg := range m.messages {
-		switch msg.role {
-		case "user":
-			sb.WriteString(userPromptStyle.Render("▸ "))
-			sb.WriteString(lipgloss.NewStyle().
-				MaxWidth(contentWidth).
-				Render(msg.content))
-
-		case "assistant":
-			info := fmt.Sprintf("✓ [%v · ~%d token]",
-				msg.timing.Round(time.Millisecond), msg.tokens)
-			sb.WriteString(checkStyle.Render(info))
-			sb.WriteString("\n")
-			rendered := m.renderMarkdown(msg.content, contentWidth)
-			sb.WriteString(rendered)
-
-		case "tool":
-			sb.WriteString(toolStyle().Render("" + msg.content))
-
-		case "tool-error":
-			sb.WriteString(toolErrorStyle().Render("✗ " + msg.content))
-
-		case "system":
-			sb.WriteString(dimStyle.Render("ℹ " + msg.content))
-
-		case "error":
-			sb.WriteString(errorStyle.Render("✗ " + msg.content))
-		}
-
-		sb.WriteString("\n")
-		if i < len(m.messages)-1 {
-			sb.WriteString("\n")
-		}
-	}
-
-	return sb.String()
-}
-
-func (m *model) renderConfirmPrompt() string {
-	toolName := m.pendingTool.name
-	path := extractField(m.pendingTool.input, "\"path\"")
-
-	boxWidth := m.width
-	if boxWidth < 40 {
-		boxWidth = 40
-	}
-	innerWidth := boxWidth - 2
-
-	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
-
-	// Option button styles
-	btnActiveAllow := lipgloss.NewStyle().
-		Background(lipgloss.Color("34")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveAllow := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("76")).
-		Padding(0, 2)
-	btnActiveDeny := lipgloss.NewStyle().
-		Background(lipgloss.Color("196")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveDeny := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("196")).
-		Padding(0, 2)
-
-	var icon string
-	switch toolName {
-	case "write_file":
-		icon = "\u270f\ufe0f"
-	case "read_file":
-		icon = "\U0001f4d6"
-	default:
-		icon = "\U0001f527"
-	}
-
-	var sb strings.Builder
-
-	// Top border
-	sb.WriteString(borderStyle.Render("\u250c" + strings.Repeat("\u2500", innerWidth) + "\u2510"))
-	sb.WriteString("\n")
-
-	// Title: icon + tool name
-	title := fmt.Sprintf(" %s  %s  ", icon, titleStyle.Render(toolName))
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(title)
-	padding := innerWidth - lipgloss.Width(title)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-
-	// Path
-	pathText := fmt.Sprintf(" %s %s", labelStyle.Render("Path:"), valueStyle.Render(path))
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(pathText)
-	padding = innerWidth - lipgloss.Width(pathText)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-
-	// Empty line separator
-	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
-	sb.WriteString("\n")
-
-	// Option buttons instead of y/n hint
-	var allowBtn, denyBtn string
-	if m.confirmChoice == 0 {
-		allowBtn = btnActiveAllow.Render("✓ Allow")
-		denyBtn = btnInactiveDeny.Render("✗ Deny")
-	} else {
-		allowBtn = btnInactiveAllow.Render("✓ Allow")
-		denyBtn = btnActiveDeny.Render("✗ Deny")
-	}
-	buttons := fmt.Sprintf(" %s  %s  %s", allowBtn, denyBtn, hintStyle.Render("Tab/←→ pilih · Enter konfirmasi"))
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(buttons)
-	padding = innerWidth - lipgloss.Width(buttons)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-
-	// Bottom border
-	sb.WriteString(borderStyle.Render("\u2514" + strings.Repeat("\u2500", innerWidth) + "\u2518"))
-
-	return sb.String()
-}
-
-// ---------------------------------------------------------------------------
-// Trust Prompt rendering
-// ---------------------------------------------------------------------------
-
-func (m *model) renderTrustPrompt() string {
-	boxWidth := m.width
-	if boxWidth < 40 {
-		boxWidth = 40
-	}
-	innerWidth := boxWidth - 2
-
-	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-
-	btnActive := lipgloss.NewStyle().
-		Background(lipgloss.Color("34")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactive := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("76")).
-		Padding(0, 2)
-	btnActiveDeny := lipgloss.NewStyle().
-		Background(lipgloss.Color("196")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveDeny := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("196")).
-		Padding(0, 2)
-
-	var sb strings.Builder
-
-	// Top border
-	sb.WriteString(borderStyle.Render("┌" + strings.Repeat("─", innerWidth) + "┐"))
-	sb.WriteString("\n")
-
-	// Title
-	title := fmt.Sprintf(" \U0001f512  %s  ", titleStyle.Render("Trust Directory?"))
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString(title)
-	padding := innerWidth - lipgloss.Width(title)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString("\n")
-
-	// Directory path
-	pathText := fmt.Sprintf(" %s %s", labelStyle.Render("Dir:"), valueStyle.Render(m.allowedDirAbs))
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString(pathText)
-	padding = innerWidth - lipgloss.Width(pathText)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString("\n")
-
-	// Empty line
-	sb.WriteString(borderStyle.Render("│" + strings.Repeat(" ", innerWidth) + "│"))
-	sb.WriteString("\n")
-
-	// Description lines
-	descLines := []string{
-		"Percayakan direktori ini?",
-		"Dengan percaya, mode auto/edit/team dapat langsung",
-		"menulis dan membuat file tanpa konfirmasi setiap kali.",
-		"Kamu bisa mengubahnya nanti dengan /trust.",
-	}
-	for _, line := range descLines {
-		lineRendered := "  " + line + strings.Repeat(" ", innerWidth-lipgloss.Width(line)-2)
-		sb.WriteString(borderStyle.Render("│"))
-		sb.WriteString(lineRendered)
-		sb.WriteString(borderStyle.Render("│"))
-		sb.WriteString("\n")
-	}
-
-	// Empty line
-	sb.WriteString(borderStyle.Render("│" + strings.Repeat(" ", innerWidth) + "│"))
-	sb.WriteString("\n")
-
-	// Buttons
-	var trustBtn, skipBtn string
-	if m.confirmChoice == 0 {
-		trustBtn = btnActive.Render("✓ Trust")
-		skipBtn = btnInactiveDeny.Render("✗ Skip")
-	} else {
-		trustBtn = btnInactive.Render("✓ Trust")
-		skipBtn = btnActiveDeny.Render("✗ Skip")
-	}
-	buttons := fmt.Sprintf(" %s  %s  %s", trustBtn, skipBtn, hintStyle.Render("Tab/←→ pilih · Enter konfirmasi"))
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString(buttons)
-	padding = innerWidth - lipgloss.Width(buttons)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("│"))
-	sb.WriteString("\n")
-
-	// Bottom border
-	sb.WriteString(borderStyle.Render("└" + strings.Repeat("─", innerWidth) + "┘"))
-
-	return sb.String()
-}
-
-// ---------------------------------------------------------------------------
-// Effort Selector rendering
-// ---------------------------------------------------------------------------
-
-func (m *model) renderEffortSelector() string {
-	boxWidth := m.width
-	if boxWidth < 40 {
-		boxWidth = 40
-	}
-	innerWidth := boxWidth - 2
-
-	borderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
-	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-
-	// Option button styles
-	btnActiveLow := lipgloss.NewStyle().
-		Background(lipgloss.Color("39")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveLow := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("39")).
-		Padding(0, 2)
-
-	btnActiveMed := lipgloss.NewStyle().
-		Background(lipgloss.Color("214")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveMed := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("214")).
-		Padding(0, 2)
-
-	btnActiveHigh := lipgloss.NewStyle().
-		Background(lipgloss.Color("196")).
-		Foreground(lipgloss.Color("255")).
-		Bold(true).
-		Padding(0, 2)
-	btnInactiveHigh := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("196")).
-		Padding(0, 2)
-
-	var sb strings.Builder
-
-	// Top border
-	sb.WriteString(borderStyle.Render("\u250c" + strings.Repeat("\u2500", innerWidth) + "\u2510"))
-	sb.WriteString("\n")
-
-	// Title
-	title := fmt.Sprintf(" \u2699\ufe0f  %s ", titleStyle.Render("Set AI Effort Level"))
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(title)
-	padding := innerWidth - lipgloss.Width(title)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-
-	// Empty line separator
-	sb.WriteString(borderStyle.Render("\u2502" + strings.Repeat(" ", innerWidth) + "\u2502"))
-	sb.WriteString("\n")
-
-	// Option buttons
-	var lowBtn, medBtn, highBtn string
-	if m.tempEffort == effortLow {
-		lowBtn = btnActiveLow.Render("Low")
-	} else {
-		lowBtn = btnInactiveLow.Render("Low")
-	}
-
-	if m.tempEffort == effortMedium {
-		medBtn = btnActiveMed.Render("Medium")
-	} else {
-		medBtn = btnInactiveMed.Render("Medium")
-	}
-
-	if m.tempEffort == effortHigh {
-		highBtn = btnActiveHigh.Render("High")
-	} else {
-		highBtn = btnInactiveHigh.Render("High")
-	}
-
-	buttons := fmt.Sprintf(" %s  %s  %s  %s", lowBtn, medBtn, highBtn, hintStyle.Render("←→ pilih · Enter konfirmasi · Esc batal"))
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString(buttons)
-	padding = innerWidth - lipgloss.Width(buttons)
-	if padding > 0 {
-		sb.WriteString(strings.Repeat(" ", padding))
-	}
-	sb.WriteString(borderStyle.Render("\u2502"))
-	sb.WriteString("\n")
-
-	// Bottom border
-	sb.WriteString(borderStyle.Render("\u2514" + strings.Repeat("\u2500", innerWidth) + "\u2518"))
-
-	return sb.String()
-}
-
-// ---------------------------------------------------------------------------
-// Markdown rendering
-// ---------------------------------------------------------------------------
-
-func (m *model) renderMarkdown(text string, width int) string {
-	wrapWidth := width - 4
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
-
-	if m.mdWidth != wrapWidth || m.mdRenderer == nil {
-		m.mdWidth = wrapWidth
-		r, err := glamour.NewTermRenderer(
-			glamour.WithStandardStyle("dark"),
-			glamour.WithWordWrap(wrapWidth),
-		)
-		if err != nil {
-			r = nil
-		}
-		m.mdRenderer = r
-	}
-
-	if m.mdRenderer != nil {
-		rendered, err := m.mdRenderer.Render(text)
-		if err == nil {
-			return rendered
-		}
-	}
-
-	rendered, err := glamour.Render(text, "dark")
-	if err != nil {
-		return text
-	}
-	return rendered
-}
-
-// ---------------------------------------------------------------------------
-// Suggestion bar rendering
-// ---------------------------------------------------------------------------
-
-func (m *model) renderSuggestions() string {
+func renderSuggestions(m *model) string {
 	if len(m.suggestions) == 0 {
 		return ""
 	}
-
-	var items []string
-	for i, cmd := range m.suggestions {
-		desc := ""
-		for _, ac := range availableCommands {
-			if ac.name == cmd {
-				desc = ac.desc
-				break
-			}
-		}
-
-		text := fmt.Sprintf(" %s  %s", cmd, suggestionDimStyle.Render(desc))
+	var b strings.Builder
+	for i, sug := range m.suggestions {
 		if i == m.selSugg {
-			items = append(items, suggestionSelectedStyle.Render(text))
+			b.WriteString(suggestionSelectedStyle.Render("▸ " + sug))
 		} else {
-			items = append(items, suggestionBoxStyle.Render(text))
+			b.WriteString(suggestionDimStyle.Render("  " + sug))
+		}
+		b.WriteString("\n")
+	}
+	return suggestionBoxStyle.Render(strings.TrimRight(b.String(), "\n"))
+}
+
+func renderEffortSelector(m *model) string {
+	levels := []effortLevel{effortLow, effortMedium, effortHigh}
+	var b strings.Builder
+	b.WriteString(titleStyle().Render("Pilih effort level:\n\n"))
+	for _, l := range levels {
+		mark := "  "
+		if l == m.tempEffort {
+			mark = "▸"
+		}
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(l.Color()))
+		if l == m.tempEffort {
+			style = style.Bold(true)
+		}
+		b.WriteString(fmt.Sprintf(" %s %s\n", mark, style.Render(l.String())))
+	}
+	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Esc batal"))
+	return b.String()
+}
+
+func renderConfirmPrompt(m *model) string {
+	options := []string{"Allow", "Deny"}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Izinkan tool %s?\n\n", toolStyle().Render(m.pendingTool.name)))
+	for i, opt := range options {
+		if i == m.confirmChoice {
+			b.WriteString(fmt.Sprintf("  ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
+		} else {
+			b.WriteString(fmt.Sprintf("    %s\n", dimStyle.Render(opt)))
+		}
+	}
+	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Y/N"))
+	return b.String()
+}
+
+func renderThinkingIndicator(m *model) string {
+	// Tampilkan teks yang sedang di-stream (jika ada) atau spinner
+	spinnerFrames := []string{"\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2823", "\u280f"}
+	spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
+
+	// Cari assistant message terakhir untuk ditampilkan
+	var content string
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].role == "assistant" {
+			content = m.messages[i].content
+			break
 		}
 	}
 
-	row := lipgloss.JoinHorizontal(lipgloss.Top, items...)
-	hint := suggestionDimStyle.Render(" Tab \u21bb")
-	return lipgloss.JoinHorizontal(lipgloss.Top, row, hint)
+	if content == "" {
+		return fmt.Sprintf(" %s  Sedang berpikir...", spinner)
+	}
+	// Hapus spinner prefix untuk display
+	for _, f := range spinnerFrames {
+		content = strings.TrimPrefix(content, f+" ")
+	}
+	content = strings.TrimSpace(content)
+	if len(content) > 60 {
+		content = content[:60] + "..."
+	}
+	return fmt.Sprintf(" %s  %s", spinner, content)
+}
+
+func renderTrustPrompt(m *model) string {
+	var b strings.Builder
+	b.WriteString(titleStyle().Render("Trust direktori ini?\n\n"))
+	b.WriteString(fmt.Sprintf("Izinkan akses file di:\n"))
+	b.WriteString(fmt.Sprintf("  %s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Render(m.allowedDirAbs)))
+	options := []string{"Trust — izinkan akses langsung", "Deny — tanya setiap kali"}
+	for i, opt := range options {
+		if i == m.confirmChoice {
+			b.WriteString(fmt.Sprintf("  ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
+		} else {
+			b.WriteString(fmt.Sprintf("    %s\n", dimStyle.Render(opt)))
+		}
+	}
+	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Y/N  •  Esc nanti"))
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// Task panel rendering (plan checklist)
+// ---------------------------------------------------------------------------
+
+func renderTaskPanel(m *model) string {
+	if len(m.taskList) == 0 {
+		return ""
+	}
+
+	boxW := m.width - 4
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	var b strings.Builder
+
+	// Top border
+	b.WriteString(dimStyle.Render("\u250c" + strings.Repeat("\u2500", boxW-2) + "\u2510"))
+	b.WriteString("\n")
+
+	// Separate incomplete vs completed
+	var incomplete, completed []taskItem
+	for _, t := range m.taskList {
+		if t.status == "completed" {
+			completed = append(completed, t)
+		} else {
+			incomplete = append(incomplete, t)
+		}
+	}
+
+	// Show max 5 items, prioritizing incomplete
+	const maxVisible = 5
+	var visible []taskItem
+	visible = append(visible, incomplete...)
+	if len(visible) < maxVisible {
+		remaining := maxVisible - len(visible)
+		if len(completed) > remaining {
+			completed = completed[:remaining]
+		}
+		visible = append(visible, completed...)
+	}
+	if len(visible) > maxVisible {
+		visible = visible[:maxVisible]
+	}
+	totalHidden := len(m.taskList) - len(visible)
+
+	for _, task := range visible {
+		var icon string
+		var iconColor string
+		switch task.status {
+		case "in_progress":
+			icon = "\u280b " // spinner + space
+			iconColor = "214"
+		case "completed":
+			icon = "\u2713 " // checkmark + space
+			iconColor = "76"
+		case "error":
+			icon = "\u2717 " // x-mark + space
+			iconColor = "196"
+		default:
+			icon = "[ ] " // pending indicator
+			iconColor = "243"
+		}
+		iconStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(iconColor))
+		if task.status == "in_progress" {
+			iconStyle = iconStyle.Bold(true)
+		}
+
+		desc := task.desc
+		if len(desc) > 50 {
+			desc = desc[:50] + "..."
+		}
+
+		line := fmt.Sprintf("\u2502 %s%s", iconStyle.Render(icon), desc)
+		b.WriteString(dimStyle.Render(line))
+		b.WriteString("\n")
+	}
+
+	// "+N more" jika ada task tersembunyi
+	if totalHidden > 0 {
+		moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+		line := fmt.Sprintf("\u2502 %s+%d lainnya", strings.Repeat(" ", 3), totalHidden)
+		b.WriteString(moreStyle.Render(line))
+		b.WriteString("\n")
+	}
+
+	// Bottom border
+	b.WriteString(dimStyle.Render("\u2514" + strings.Repeat("\u2500", boxW-2) + "\u2518"))
+
+	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// Settings view
+// ---------------------------------------------------------------------------
+
+func renderSettings(m *model) string {
+	cfg := m.settingsConfig
+	if cfg == nil {
+		return "Loading settings..."
+	}
+
+	// Profile list sub-view
+	if m.settingsShowProfileList {
+		return renderProfileList(m)
+	}
+
+	boxW := m.width - 4
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	var b strings.Builder
+
+	// Title
+	title := lipgloss.NewStyle().
+		Foreground(promptColor).
+		Bold(true).
+		Render("⚙ Pengaturan")
+	b.WriteString(title)
+	b.WriteString("\n")
+
+	// Field definitions
+	type fieldDef struct {
+		label string
+		value string
+	}
+
+	// Active profile name
+	profileName := "(no profile)"
+	if cfg.ActiveProfile >= 0 && cfg.ActiveProfile < len(cfg.Profiles) {
+		profileName = cfg.Profiles[cfg.ActiveProfile].Name
+	}
+
+	activeCfg := cfg.ActiveConfig()
+	fields := []fieldDef{
+		{label: "Profile", value: profileName},
+		{label: "Provider", value: activeCfg.Provider},
+		{label: "Model", value: activeCfg.Model},
+		{label: "API Key", value: maskAPIKey(activeCfg.APIKey)},
+		{label: "Base URL", value: activeCfg.BaseURL},
+		{label: "Allowed Dir", value: cfg.App.AllowedDir},
+		{label: "Session", value: cfg.App.Session},
+	}
+
+	// Max label width for alignment
+	maxLabelW := 0
+	for _, f := range fields {
+		if len(f.label) > maxLabelW {
+			maxLabelW = len(f.label)
+		}
+	}
+
+	sepLine := separatorStyle.Render(strings.Repeat("─", boxW))
+
+	b.WriteString(sepLine)
+	b.WriteString("\n")
+
+	for i, f := range fields {
+		isCurrent := i == int(m.settingsCurrentField)
+
+		if isCurrent {
+			// Current field: show with indicator
+			labelStyle := lipgloss.NewStyle().
+				Width(maxLabelW).
+				Align(lipgloss.Left).
+				Foreground(lipgloss.Color("255")).
+				Bold(true)
+			indicator := " ▸ "
+			label := labelStyle.Render(f.label + ":")
+
+			var displayVal string
+			if m.settingsEditMode {
+				// Editing: show the buffer with cursor
+				if i == int(settingsAPIKey) {
+					// For API key, show masked value when not editing, raw when editing
+					displayVal = m.settingsEditBuffer + "█"
+					// But only show the input unmasked while actively typing
+				} else {
+					displayVal = m.settingsEditBuffer + "█"
+				}
+				valStyle := lipgloss.NewStyle().
+					Background(lipgloss.Color("240")).
+					Foreground(lipgloss.Color("255")).
+					Padding(0, 1)
+				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(displayVal)))
+			} else {
+				// Not editing: show current value
+				valStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("255")).
+					Padding(0, 1)
+				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(f.value)))
+			}
+		} else {
+			// Non-current field: dimmed
+			labelStyle := lipgloss.NewStyle().
+				Width(maxLabelW).
+				Align(lipgloss.Left).
+				Foreground(dimColor)
+			label := labelStyle.Render(f.label + ":")
+			valStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Padding(0, 1)
+			b.WriteString(fmt.Sprintf("   %s %s\n", label, valStyle.Render(f.value)))
+		}
+	}
+
+	b.WriteString(sepLine)
+	b.WriteString("\n")
+
+	// Controls hint
+	controls := dimStyle.Render(
+		"↑↓ navigasi  |  Enter edit (Profile: lihat daftar)  |  Esc batal  |  Ctrl+S simpan & keluar",
+	)
+	b.WriteString(controls)
+	b.WriteString("\n")
+
+	return lipgloss.NewStyle().
+		Width(boxW).
+		Padding(0, 2).
+		Render(b.String())
+}
+
+// maskAPIKey masks an API key for display, showing only the last 4 characters.
+// renderProfileList renders the profile selection sub-view.
+func renderProfileList(m *model) string {
+	profiles := m.settingsConfig.Profiles
+	if len(profiles) == 0 {
+		return "Tidak ada profil."
+	}
+
+	boxW := m.width - 4
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	var b strings.Builder
+
+	title := lipgloss.NewStyle().
+		Foreground(promptColor).
+		Bold(true).
+		Render("Pilih Profil LLM")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	for i, p := range profiles {
+		isSelected := i == m.settingsProfileSel
+		isActive := i == m.settingsConfig.ActiveProfile
+
+		prefix := "  "
+		if isSelected {
+			prefix = " ▸"
+		}
+
+		nameStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255"))
+		if isSelected {
+			nameStyle = nameStyle.Bold(true)
+		}
+
+		var activeMark string
+		if isActive {
+			activeMark = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("76")).
+				Render(" \u2713 aktif")
+		} else {
+			activeMark = dimStyle.Render("   ")
+		}
+
+		detailStr := fmt.Sprintf("%s/%s", p.Provider, p.Model)
+		detail := dimStyle.Render(detailStr)
+
+		line := fmt.Sprintf("%s %s%s  %s\n", prefix, nameStyle.Render(p.Name), activeMark, detail)
+		b.WriteString(line)
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih & switch  •  Esc batal"))
+	return lipgloss.NewStyle().
+		Width(boxW).
+		Padding(0, 2).
+		Render(b.String())
+}
+
+func maskAPIKey(key string) string {
+	if key == "" {
+		return "(kosong)"
+	}
+	if len(key) <= 4 {
+		return "****"
+	}
+	return "****" + key[len(key)-4:]
 }
