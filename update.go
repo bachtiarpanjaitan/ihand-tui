@@ -150,7 +150,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							output:   toolOutput,
 							isError:  isToolErr,
 						}
-						display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 						role := "tool"
 						if isToolErr {
 							role = "tool-error"

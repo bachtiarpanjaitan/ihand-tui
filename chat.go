@@ -381,7 +381,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 				} else {
 					toolOutput = executeToolCall(state.activeTools, toolCall)
 					isToolError = isToolOutputError(toolOutput)
-					display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 					role := "tool"
 					if isToolError {
 						role = "tool-error"
@@ -470,7 +470,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		isToolError := isToolOutputError(toolOutput)
 
 		// Show tool call in both activity bar + conversation
-		display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 		role := "tool"
 		if isToolError {
 			role = "tool-error"
@@ -627,7 +627,6 @@ func isToolOutputError(output string) bool {
 // formatToolDisplay returns a user-friendly display string for a tool call result.
 // Uses simple string extraction to avoid issues with imperfect JSON from tool output.
 func formatToolDisplay(toolName, input, output string) string {
-	// Extract path from any JSON-like output for the tree connector display
 	path := extractField(output, `"path"`)
 	if path == "" {
 		path = extractField(output, `"path\":`)
@@ -715,7 +714,6 @@ func formatToolDisplay(toolName, input, output string) string {
 	case "write_file":
 		success := strings.Contains(output, `"success": true`) || strings.Contains(output, `"success":true`)
 		if path != "" {
-			preview := ""
 			// Extract diff from tool output
 			diffStr := extractField(output, `"diff"`)
 			var previewDiff string
@@ -743,52 +741,41 @@ func formatToolDisplay(toolName, input, output string) string {
 				}
 			}
 			if success || strings.Contains(output, "berhasil") {
-				if previewDiff != "" {
-					// Count additions and deletions separately
-					var diffText string
-					json.Unmarshal([]byte(`"`+diffStr+`"`), &diffText)
-					addCount, delCount := 0, 0
-					for _, line := range strings.Split(diffText, "\n") {
-						if len(line) > 0 {
-							if line[0] == '+' {
-								addCount++
-							} else if line[0] == '-' {
-								delCount++
-							}
+			if previewDiff != "" {
+				// Count additions and deletions
+				var diffText string
+				json.Unmarshal([]byte(`"`+diffStr+`"`), &diffText)
+				addCount, delCount := 0, 0
+				for _, line := range strings.Split(diffText, "\n") {
+					if len(line) > 0 {
+						if line[0] == '+' {
+							addCount++
+						} else if line[0] == '-' {
+							delCount++
 						}
 					}
-					// Batasi preview diff
-					const maxPreviewLines = 25
-					diffDisplayLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
-					shortDiff := previewDiff
-					if len(diffDisplayLines) > maxPreviewLines {
-						shortDiff = strings.Join(diffDisplayLines[:maxPreviewLines], "\n") + "\n  ..."
-					}
-					return fmt.Sprintf("%s — %d byte (+%d/-%d)\n%s", path, size, addCount, delCount, shortDiff)
 				}
-				// Fallback: content preview (jika diff kosong)
-				c := extractField(input, `"content"`)
-				preview := ""
-				if c != "" {
-					// Coba unmarshal json string untuk menangani newline, jika gagal gunakan raw
-					var unmarshaled string
-					if err := json.Unmarshal([]byte(`"`+c+`"`), &unmarshaled); err == nil {
-						c = unmarshaled
-					}
-					if len(c) > 500 {
-						preview = "\n" + c[:500] + "..."
-					} else {
-						preview = "\n" + c
-					}
+				// Claude Code-style: summary + diff preview with tree continuation
+				var b strings.Builder
+				b.WriteString(fmt.Sprintf("%s — +%d/-%d  ✓  Ditulis (%d bytes)", path, addCount, delCount, size))
+				const maxPreviewLines = 20
+				diffLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
+				if len(diffLines) > maxPreviewLines {
+					diffLines = diffLines[:maxPreviewLines]
+					diffLines = append(diffLines, "  ...")
 				}
-				return fmt.Sprintf("%s \u2014 Ditulis (%d bytes)%s", path, size, preview)
+				for _, line := range diffLines {
+					b.WriteString("\n  │  " + line)
+				}
+				return b.String()
 			}
-			msg := extractField(output, `"message"`)
-			if msg != "" {
-				return fmt.Sprintf("%s \u2014 %s%s", path, msg, preview)
-			}
-			return fmt.Sprintf("%s \u2014 Selesai%s", path, preview)
+			return fmt.Sprintf("%s — Ditulis (%d bytes)  ✓", path, size)
 		}
+		msg := extractField(output, `"message"`)
+		if msg != "" {
+			return fmt.Sprintf("%s \u2014 %s", path, msg)
+		}
+		return fmt.Sprintf("%s \u2014 Selesai", path)		}
 	case "list_files":
 		if path != "" {
 			return fmt.Sprintf("%s — %d item", path, count)
@@ -958,6 +945,16 @@ func truncateStr(s string, maxLen int) string {
 }
 
 // cleanToolName strips markdown formatting from a tool name (e.g. "**read_file**" → "read_file").
+var knownTools = map[string]bool{
+	"read_file": true, "read_file_lines": true, "write_file": true,
+	"edit_file": true, "create_directory": true, "list_files": true,
+	"find_files": true, "search_text": true, "exec": true, "browse": true,
+}
+
+func isKnownTool(name string) bool {
+	return knownTools[name]
+}
+
 func cleanToolName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.TrimPrefix(name, "**")
@@ -1007,6 +1004,10 @@ func parseReActSingle(text string) (reActTool, bool) {
 		parenIdx := strings.Index(actionStr, "(")
 		if parenIdx > 0 {
 			name := cleanToolName(actionStr[:parenIdx])
+			// Validate tool name — must match a known tool
+			if !isKnownTool(name) {
+				return reActTool{}, false
+			}
 			inputStr := actionStr[parenIdx+1:]
 
 			// Gunakan bracket counting untuk handle JSON dengan nested {} di dalam string
@@ -1018,7 +1019,7 @@ func parseReActSingle(text string) (reActTool, bool) {
 				}, false
 			}
 		}
-		return reActTool{name: actionStr, input: "{}"}, false
+		return reActTool{}, false
 	}
 
 	// Fallback: toolCallRe — hanya untuk format tanpa "Action:" prefix
@@ -1163,7 +1164,7 @@ func executeAllToolCalls(m *model, state chatLoopState, resp *core.Response, too
 		if r.name == "" {
 			continue
 		}
-		display := "  ⎿  " + formatToolDisplay(r.name, r.input, r.output)
+		display := formatToolDisplay(r.name, r.input, r.output)
 		role := "tool"
 		if r.isError {
 			role = "tool-error"
