@@ -117,7 +117,9 @@ func (m *model) renderFull() string {
 	} else if m.state == stateConfirming {
 		bottom = renderConfirmPrompt(m)
 	} else if m.state == stateThinking {
-		bottom = renderThinkingIndicator(m)
+		// Thinking indicator is now shown in the viewport via streaming message.
+		// Bottom area just shows the textarea (blurred).
+		bottom = m.textarea.View()
 	} else if m.state == stateTrustPrompt {
 		bottom = renderTrustPrompt(m)
 	} else if m.state == stateSettings {
@@ -283,7 +285,7 @@ func renderThinkingIndicator(m *model) string {
 	}
 
 	if content == "" {
-		return fmt.Sprintf(" %s  Sedang berpikir...", spinner)
+		return fmt.Sprintf(" %s  Sedang Berpikir...", spinner)
 	}
 	// Hapus spinner prefix untuk display
 	for _, f := range spinnerFrames {
@@ -322,7 +324,7 @@ func renderTaskPanel(m *model) string {
 		return ""
 	}
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -420,7 +422,7 @@ func renderSettings(m *model) string {
 		return renderProfileList(m)
 	}
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -431,7 +433,7 @@ func renderSettings(m *model) string {
 	title := lipgloss.NewStyle().
 		Foreground(promptColor).
 		Bold(true).
-		Render("⚙ Pengaturan")
+		Render("  ⚙ Pengaturan")
 	b.WriteString(title)
 	b.WriteString("\n")
 
@@ -451,7 +453,7 @@ func renderSettings(m *model) string {
 	fields := []fieldDef{
 		{label: "Profile", value: profileName},
 		{label: "Nama Profil", value: profileName},
-		{label: "Provider", value: activeCfg.Provider},
+		{label: "Skema", value: activeCfg.Schema},
 		{label: "Model", value: activeCfg.Model},
 		{label: "API Key", value: maskAPIKey(activeCfg.APIKey)},
 		{label: "Base URL", value: activeCfg.BaseURL},
@@ -548,10 +550,7 @@ func renderSettings(m *model) string {
 	b.WriteString(controls)
 	b.WriteString("\n")
 
-	return lipgloss.NewStyle().
-		Width(boxW).
-		Padding(0, 2).
-		Render(b.String())
+	return b.String()
 }
 
 // maskAPIKey masks an API key for display, showing only the last 4 characters.
@@ -559,7 +558,7 @@ func renderSettings(m *model) string {
 func renderProfileList(m *model) string {
 	profiles := m.settingsConfig.Profiles
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -599,7 +598,7 @@ func renderProfileList(m *model) string {
 			activeMark = dimStyle.Render("   ")
 		}
 
-		detailStr := fmt.Sprintf("%s/%s", p.Provider, p.Model)
+		detailStr := fmt.Sprintf("%s/%s", p.Schema, p.Model)
 		detail := dimStyle.Render(detailStr)
 
 		line := fmt.Sprintf("%s %s%s  %s\n", prefix, nameStyle.Render(p.Name), activeMark, detail)
@@ -621,10 +620,7 @@ func renderProfileList(m *model) string {
 
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih/switch  •  + Add New Profile  •  Esc batal"))
-	return lipgloss.NewStyle().
-		Width(boxW).
-		Padding(0, 2).
-		Render(b.String())
+	return b.String()
 }
 
 func maskAPIKey(key string) string {

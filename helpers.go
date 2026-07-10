@@ -166,3 +166,39 @@ func resolveFileMentions(input string, mentions map[string]string) string {
 	}
 	return result
 }
+
+func (m *model) trackActionFromContent(streamContent string) {
+	// Count new actions in this stream content that haven't been counted yet
+	// Simple approach: count occurrences of each tool name
+	m.actionCounts = actionCounters{} // reset — recount all from content
+	if strings.Contains(streamContent, "read_file") {
+		m.actionCounts.read = strings.Count(streamContent, "Action: read_file")
+	}
+	if strings.Contains(streamContent, "read_file_lines") {
+		m.actionCounts.read += strings.Count(streamContent, "Action: read_file_lines")
+	}
+	if strings.Contains(streamContent, "write_file") {
+		m.actionCounts.write = strings.Count(streamContent, "Action: write_file")
+	}
+	if strings.Contains(streamContent, "edit_file") {
+		m.actionCounts.edit = strings.Count(streamContent, "Action: edit_file")
+	}
+	if strings.Contains(streamContent, "list_files") {
+		m.actionCounts.list = strings.Count(streamContent, "Action: list_files")
+	}
+	if strings.Contains(streamContent, "find_files") {
+		m.actionCounts.find = strings.Count(streamContent, "Action: find_files")
+	}
+	if strings.Contains(streamContent, "search_text") {
+		m.actionCounts.search = strings.Count(streamContent, "Action: search_text")
+	}
+	if strings.Contains(streamContent, "exec") {
+		m.actionCounts.exec = strings.Count(streamContent, "Action: exec")
+	}
+	if strings.Contains(streamContent, "browse") {
+		m.actionCounts.browse = strings.Count(streamContent, "Action: browse")
+	}
+	if strings.Contains(streamContent, "create_directory") {
+		m.actionCounts.created = strings.Count(streamContent, "Action: create_directory")
+	}
+}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bachtiarpanjaitan/ihandai-go"
@@ -39,7 +41,7 @@ type settingsField int
 const (
 	settingsProfile settingsField = iota
 	settingsProfileName
-	settingsProvider
+	settingsSchema
 	settingsModel
 	settingsAPIKey
 	settingsBaseURL
@@ -50,8 +52,8 @@ const (
 
 func (s settingsField) String() string {
 	switch s {
-	case settingsProvider:
-		return "Provider"
+	case settingsSchema:
+		return "Skema"
 	case settingsModel:
 		return "Model"
 	case settingsAPIKey:
@@ -230,6 +232,58 @@ type slashCommand struct {
 	desc string
 }
 
+// actionCounters tracks tool call counts for Claude Code-style activity display.
+type actionCounters struct {
+	read    int
+	write   int
+	edit    int
+	list    int
+	find    int
+	search  int
+	exec    int
+	browse  int
+	created int
+}
+
+func (c actionCounters) total() int {
+	return c.read + c.write + c.edit + c.list + c.find + c.search + c.exec + c.browse + c.created
+}
+
+func (c actionCounters) String() string {
+	var parts []string
+	if c.read > 0 {
+		parts = append(parts, fmt.Sprintf("%d file dibaca", c.read))
+	}
+	if c.write > 0 {
+		parts = append(parts, fmt.Sprintf("%d file ditulis", c.write))
+	}
+	if c.edit > 0 {
+		parts = append(parts, fmt.Sprintf("%d file diedit", c.edit))
+	}
+	if c.list > 0 {
+		parts = append(parts, fmt.Sprintf("%d direktori", c.list))
+	}
+	if c.find > 0 {
+		parts = append(parts, fmt.Sprintf("%d pencarian file", c.find))
+	}
+	if c.search > 0 {
+		parts = append(parts, fmt.Sprintf("%d pencarian teks", c.search))
+	}
+	if c.exec > 0 {
+		parts = append(parts, fmt.Sprintf("%d perintah", c.exec))
+	}
+	if c.browse > 0 {
+		parts = append(parts, fmt.Sprintf("%d URL", c.browse))
+	}
+	if c.created > 0 {
+		parts = append(parts, fmt.Sprintf("%d direktori dibuat", c.created))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
 // reActTool represents a parsed tool call from LLM text output.
 type reActTool struct {
 	name   string
@@ -292,6 +346,10 @@ type model struct {
 	mouseEnabled bool // toggle mouse capture (for text selection)
 	tickCount    int  // animation counter for status dots
 	retryCount   int  // hitungan retry untuk error LLM
+
+	// Streaming activity display (Claude Code-style)
+	actionCounts    actionCounters
+	activityContent string // base content without spinner, managed by streaming handler
 
 	// Task list (plan panel)
 	taskList    []taskItem // daftar task dari plan checklist

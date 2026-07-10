@@ -510,6 +510,14 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 }
 
 // ---------------------------------------------------------------------------
+// treeEntry is used for recursive directory listing.
+type treeEntry struct {
+	Name  string       `json:"name"`
+	IsDir bool         `json:"isDir"`
+	Size  int64        `json:"size,omitempty"`
+	Files []*treeEntry `json:"files,omitempty"`
+}
+
 // ListFilesTool — list file dalam direktori yang diizinkan
 // ---------------------------------------------------------------------------
 
@@ -526,14 +534,16 @@ func (t *ListFilesTool) Name() string { return "list_files" }
 func (t *ListFilesTool) Description() string {
 	return "Menampilkan daftar file dan folder dalam direktori yang diizinkan. " +
 		"Gunakan untuk melihat struktur file. " +
-		"Input: {\"path\": \".\"} (kosongkan atau gunakan \".\" untuk root direktori)"
+		"Parameter depth (default 1): gunakan nilai >1 untuk recursive listing (mirip tree). " +
+		"Contoh: list_files({\"path\": \".\", \"depth\": \"3\"}) untuk tree 3 level."
 }
 
 func (t *ListFilesTool) InputSchema() *core.JSONSchema {
 	return &core.JSONSchema{
 		Type: "object",
 		Properties: map[string]*core.JSONSchemaProp{
-			"path": {Type: "string", Description: "Path relatif ke folder yang akan di-list (default: \".\")"},
+			"path":  {Type: "string", Description: "Path relatif ke folder yang akan di-list (default: \".\")"},
+			"depth": {Type: "string", Description: "Kedalaman recursive listing (default: 1). Gunakan 2-3 untuk tree view."},
 		},
 		Required: []string{},
 	}
@@ -541,13 +551,24 @@ func (t *ListFilesTool) InputSchema() *core.JSONSchema {
 
 func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Path string `json:"path"`
+		Path  string `json:"path"`
+		Depth string `json:"depth"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		params.Path = "."
 	}
 	if params.Path == "" {
 		params.Path = "."
+	}
+	depth := 1
+	if params.Depth != "" {
+		fmt.Sscanf(params.Depth, "%d", &depth)
+		if depth < 1 {
+			depth = 1
+		}
+		if depth > 5 {
+			depth = 5 // batasi max depth
+		}
 	}
 
 	fullPath, err := t.resolvePath(params.Path)
@@ -564,30 +585,57 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (jso
 		return json.RawMessage(fmt.Sprintf(`{"error": "%s adalah file, bukan direktori"}`, params.Path)), nil
 	}
 
-	entries, err := os.ReadDir(fullPath)
+	// Recursive listing
+	var listDir func(dirPath string, currentDepth int) ([]*treeEntry, error)
+	listDir = func(dirPath string, currentDepth int) ([]*treeEntry, error) {
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return nil, err
+		}
+
+		var result []*treeEntry
+		for _, e := range entries {
+			info, _ := e.Info()
+			size := int64(0)
+			isDir := e.IsDir()
+			if info != nil && !isDir {
+				size = info.Size()
+			}
+			entry := &treeEntry{
+				Name:  e.Name(),
+				IsDir: isDir,
+				Size:  size,
+			}
+			// Recurse into subdirectories if depth allows
+			if isDir && currentDepth < depth {
+				children, err := listDir(filepath.Join(dirPath, e.Name()), currentDepth+1)
+				if err == nil {
+					entry.Files = children
+				}
+			}
+			result = append(result, entry)
+		}
+		return result, nil
+	}
+
+	files, err := listDir(fullPath, 1)
 	if err != nil {
 		return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca direktori: %s"}`, err.Error())), nil
 	}
 
-	var files []map[string]any
-	for _, e := range entries {
-		info, _ := e.Info()
-		size := int64(0)
-		isDir := e.IsDir()
-		if info != nil && !isDir {
-			size = info.Size()
-		}
-		files = append(files, map[string]any{
-			"name":  e.Name(),
-			"isDir": isDir,
-			"size":  size,
-		})
-	}
+	// Build a flat + tree representation
+	totalCount := countEntries(files)
+
+	// Also build a readable tree string
+	treeStr := buildTreeString(files, "", depth)
 
 	result, _ := json.Marshal(map[string]any{
-		"path":  params.Path,
-		"count": len(files),
-		"files": files,
+		"path":      params.Path,
+		"depth":     depth,
+		"count":     totalCount,
+		"files":     files,
+		"tree":      treeStr,
+		"tree_lines": strings.Split(strings.TrimRight(treeStr, "\n"), "\n"),
 	})
 	return json.RawMessage(result), nil
 }
@@ -1387,4 +1435,44 @@ func computeDiff(oldContent, newContent string) string {
 
 	// Gabung baris diff dengan newline (raw text, bukan JSON)
 	return strings.Join(diffLines, "\n")
+}
+
+// countEntries recursively counts all file entries including nested children.
+func countEntries(entries []*treeEntry) int {
+	count := 0
+	for _, e := range entries {
+		count++
+		if e.Files != nil {
+			count += countEntries(e.Files)
+		}
+	}
+	return count
+}
+
+// buildTreeString returns a visual tree representation of the file entries.
+func buildTreeString(entries []*treeEntry, prefix string, maxDepth int) string {
+	var b strings.Builder
+	for i, e := range entries {
+		isLast := i == len(entries)-1
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+		b.WriteString(prefix + connector + e.Name)
+		if e.IsDir {
+			b.WriteString("/")
+		}
+		b.WriteString("\n")
+
+		if e.IsDir && e.Files != nil {
+			childPrefix := prefix
+			if isLast {
+				childPrefix += "    "
+			} else {
+				childPrefix += "│   "
+			}
+			b.WriteString(buildTreeString(e.Files, childPrefix, maxDepth))
+		}
+	}
+	return b.String()
 }

@@ -41,7 +41,7 @@ func (m model) saveSettings() (tea.Model, tea.Cmd) {
 
 	// Update runtime values from the saved config
 	activeCfg := cfg.ActiveConfig()
-	m.provider = activeCfg.Provider
+	m.provider = activeCfg.Schema
 	m.modelName = activeCfg.Model
 	m.currentProfile = cfg.ActiveProfile
 	m.session = cfg.App.Session
@@ -110,11 +110,11 @@ func (m *model) switchProfile(profileIdx int) error {
 	}
 
 	newAI, err := ihandai.New(
-		ihandai.WithLLM(profile.Provider, llmOpts...),
+		ihandai.WithLLM(profile.Schema, llmOpts...),
 		ihandai.WithMemory(m.memory),
 	)
 	if err != nil {
-		return fmt.Errorf("gagal konek ke %s/%s: %w", profile.Provider, profile.Model, err)
+		return fmt.Errorf("gagal konek ke %s/%s: %w", profile.Schema, profile.Model, err)
 	}
 
 	// Close old client
@@ -138,7 +138,7 @@ func (m *model) switchProfile(profileIdx int) error {
 	// Update state
 	cfg.ActiveProfile = profileIdx
 	m.currentProfile = profileIdx
-	m.provider = profile.Provider
+	m.provider = profile.Schema
 	m.modelName = profile.Model
 
 	return nil
@@ -332,7 +332,7 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Create a new blank profile
 			newProfile := LLMProfile{
 				Name:     "Profile Baru",
-				Provider: "ollama",
+				Schema: "ollama",
 				Model:    "",
 				APIKey:   "",
 				BaseURL:  "",
@@ -340,10 +340,10 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.settingsConfig.Profiles = append(m.settingsConfig.Profiles, newProfile)
 			m.settingsConfig.ActiveProfile = len(m.settingsConfig.Profiles) - 1
 
-			// Go back to settings main view, auto-select Provider field for editing
+			// Go back to settings main view, auto-select Skema field for editing
 			m.settingsShowProfileList = false
-			m.settingsCurrentField = settingsProvider
-			m.settingsEditBuffer = newProfile.Provider
+			m.settingsCurrentField = settingsSchema
+			m.settingsEditBuffer = newProfile.Schema
 			m.settingsEditMode = true
 			m.rebuildViewport()
 			return m, nil
@@ -365,7 +365,7 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					})
 				}
 				m.toolActivity = fmt.Sprintf("✓ Profil: %s (%s/%s)",
-					profiles[selected].Name, profiles[selected].Provider, profiles[selected].Model)
+					profiles[selected].Name, profiles[selected].Schema, profiles[selected].Model)
 			}
 		}
 		m.state = stateReady
@@ -407,8 +407,8 @@ func getSettingsFieldValue(m model, field settingsField) string {
 			return cfg.Profiles[cfg.ActiveProfile].Name
 		}
 		return ""
-	case settingsProvider:
-		return cfg.ActiveConfig().Provider
+	case settingsSchema:
+		return cfg.ActiveConfig().Schema
 	case settingsModel:
 		return cfg.ActiveConfig().Model
 	case settingsAPIKey:
@@ -439,8 +439,8 @@ func applySettingsFieldValue(m *model, field settingsField, value string) {
 	case settingsProfile, settingsProfileName:
 		// Profile name change
 		m.settingsConfig.Profiles[profileIdx].Name = value
-	case settingsProvider:
-		m.settingsConfig.Profiles[profileIdx].Provider = value
+	case settingsSchema:
+		m.settingsConfig.Profiles[profileIdx].Schema = value
 	case settingsModel:
 		m.settingsConfig.Profiles[profileIdx].Model = value
 	case settingsAPIKey:

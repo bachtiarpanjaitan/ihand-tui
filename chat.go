@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	toolspkg "github.com/bachtiarpanjaitan/ihand-tui/internal/tools"
@@ -264,6 +265,15 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	toolCall, isFinal := parseReActResponse(resp.Content)
 
+	// Detect multiple inline Action: calls (LLM concatenating actions on one line).
+	// Execute ALL of them so the LLM gets all expected results.
+	if !isFinal && toolCall.name != "" {
+		allActions := parseReActAll(resp.Content)
+		if len(allActions) > 1 {
+			return executeAllToolCalls(m, state, resp, allActions)
+		}
+	}
+
 	// Jika ada Action: tapi konten juga mengandung Final Answer: setelah Action terakhir,
 	// ekstrak Final Answer-nya agar ditampilkan. Tool call sudah dieksekusi via early execution.
 	if !isFinal && toolCall.name != "" && strings.Contains(resp.Content, "Final Answer:") && m.earlyTool.toolName != "" {
@@ -315,12 +325,26 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.memory.Append(m.ctx, state.session, core.Message{
 			Role: "assistant", Content: resp.Content,
 		})
-		m.messages = append(m.messages, chatMessage{
-			role:    "assistant",
-			content: toolCall.output,
-			tokens:  state.totalTokens,
-			timing:  time.Since(state.startTime),
-		})
+		// Update last assistant message (streaming placeholder) instead of appending
+		updated := false
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].role == "assistant" {
+				m.messages[i].content = toolCall.output
+				m.messages[i].tokens = state.totalTokens
+				m.messages[i].timing = time.Since(state.startTime)
+				m.messages[i].streaming = false
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			m.messages = append(m.messages, chatMessage{
+				role:    "assistant",
+				content: toolCall.output,
+				tokens:  state.totalTokens,
+				timing:  time.Since(state.startTime),
+			})
+		}
 		m.state = stateReady
 		m.totalTokens += state.totalTokens
 		m.toolActivity = "✓ Selesai"
@@ -357,7 +381,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 				} else {
 					toolOutput = executeToolCall(state.activeTools, toolCall)
 					isToolError = isToolOutputError(toolOutput)
-					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+					display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 					role := "tool"
 					if isToolError {
 						role = "tool-error"
@@ -394,12 +418,26 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 						}
 					}
 					_ = state.toolCalls
+					// Update last assistant message instead of appending
+				updated := false
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].role == "assistant" {
+						m.messages[i].content = finalContent
+						m.messages[i].tokens = state.totalTokens
+						m.messages[i].timing = time.Since(state.startTime)
+						m.messages[i].streaming = false
+						updated = true
+						break
+					}
+				}
+				if !updated {
 					m.messages = append(m.messages, chatMessage{
 						role:    "assistant",
 						content: finalContent,
 						tokens:  state.totalTokens,
 						timing:  time.Since(state.startTime),
 					})
+				}
 					m.state = stateReady
 					m.totalTokens += state.totalTokens
 					m.toolActivity = "\u2713 Selesai"
@@ -432,7 +470,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		isToolError := isToolOutputError(toolOutput)
 
 		// Show tool call in both activity bar + conversation
-		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+		display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 		role := "tool"
 		if isToolError {
 			role = "tool-error"
@@ -589,7 +627,7 @@ func isToolOutputError(output string) bool {
 // formatToolDisplay returns a user-friendly display string for a tool call result.
 // Uses simple string extraction to avoid issues with imperfect JSON from tool output.
 func formatToolDisplay(toolName, input, output string) string {
-	// Extract path from any JSON-like output
+	// Extract path from any JSON-like output for the tree connector display
 	path := extractField(output, `"path"`)
 	if path == "" {
 		path = extractField(output, `"path\":`)
@@ -936,6 +974,31 @@ func cleanToolName(name string) string {
 }
 
 func parseReActResponse(text string) (reActTool, bool) {
+	tool, hasTool := parseReActSingle(text)
+	hasFinal := strings.Contains(text, "Final Answer:")
+
+	// If both tool call and Final Answer present, prioritize tool call.
+	// The Final Answer will be captured after tool execution.
+	if hasTool && hasFinal {
+		return tool, false
+	}
+
+	// Final Answer only — extract content for display
+	if hasFinal {
+		if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
+			tool.output = strings.TrimSpace(m[1])
+		}
+		return tool, true
+	}
+
+	if hasTool {
+		return tool, false
+	}
+	return reActTool{}, false
+}
+
+// parseReActSingle extracts the FIRST Action: tool call from the text.
+func parseReActSingle(text string) (reActTool, bool) {
 	// Periksa Action: format dulu — cari tool call SEBELUM Final Answer
 	// agar tool call tidak terlewat jika LLM menyertakan keduanya dalam satu respons.
 	if m := actionRe.FindStringSubmatch(text); len(m) > 1 {
@@ -970,12 +1033,189 @@ func parseReActResponse(text string) (reActTool, bool) {
 		return reActTool{input: strings.TrimSpace(m[1])}, false
 	}
 
-	// Final Answer — checked AFTER tool calls so tool calls take priority
-	if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
-		return reActTool{output: strings.TrimSpace(m[1])}, true
+	return reActTool{}, false
+}
+
+// parseReActAll extracts ALL Action: tool calls from the text.
+// Handles LLM outputs that concatenate multiple Action: calls inline.
+func parseReActAll(text string) []reActTool {
+	var tools []reActTool
+
+	// Cari semua kemunculan "Action:" diikuti tool_name(
+	// Gunakan bracket counting untuk extract JSON dengan benar (handle nested {})
+	remaining := text
+	safety := 0
+	for safety < 500 {
+		safety++
+		idx := strings.Index(remaining, "Action:")
+		if idx < 0 {
+			break
+		}
+		remaining = remaining[idx+7:] // skip "Action:"
+		remaining = strings.TrimSpace(remaining)
+
+		// Extract tool name (chars before first '(')
+		parenIdx := strings.Index(remaining, "(")
+		if parenIdx <= 0 {
+			// No valid tool call here — skip 1 char to avoid infinite loop
+			if len(remaining) > 1 {
+				remaining = remaining[1:]
+			} else {
+				break
+			}
+			continue
+		}
+		name := cleanToolName(remaining[:parenIdx])
+
+		// Extract balanced JSON starting from parenIdx
+		jsonStr := extractBalancedJSON(remaining[parenIdx+1:])
+		if jsonStr == "" {
+			// JSON parsing failed — skip past this "(" and continue
+			if parenIdx+1 < len(remaining) {
+				remaining = remaining[parenIdx+1:]
+			} else {
+				break
+			}
+			continue
+		}
+
+		tools = append(tools, reActTool{
+			name:  name,
+			input: strings.TrimSpace(jsonStr),
+		})
+
+		// Advance past the parsed tool call: skip name + ( + json + )
+		advance := parenIdx + 1 + len(jsonStr) + 1
+		if advance < len(remaining) {
+			remaining = remaining[advance:]
+		} else {
+			break
+		}
 	}
 
-	return reActTool{}, false
+	// If no matches found, fall back to single parse
+	if len(tools) == 0 {
+		tool, _ := parseReActSingle(text)
+		if tool.name != "" {
+			tools = append(tools, tool)
+		}
+	}
+
+	return tools
+}
+
+// executeAllToolCalls executes multiple tool calls from a single LLM response.
+// Read-only tools are executed concurrently; write tools are executed sequentially.
+func executeAllToolCalls(m *model, state chatLoopState, resp *core.Response, toolCalls []reActTool) (tea.Cmd, bool) {
+	// Check if any tool needs permission (non-auto-trusted)
+	for _, call := range toolCalls {
+		if call.name == "" {
+			continue
+		}
+		if needsPermission(call.name) && !isToolAutoTrustedMode(m.mode, m.trustWrite, call.name) {
+			// For non-auto-trusted tools, pause and ask for confirmation (first one only)
+			m.pendingTool = call
+			m.pendingState = state
+			m.pendingToolResp = resp.Content
+			m.state = stateConfirming
+			m.confirmChoice = 0
+			m.statusMsg = ""
+			m.toolActivity = fmt.Sprintf("Konfirmasi: %s", call.name)
+			m.recalcLayout()
+			m.rebuildViewport()
+			return m.textarea.Focus(), true
+		}
+	}
+
+	// All tools are auto-trusted — execute concurrently
+	type toolResult struct {
+		index   int
+		name    string
+		input   string
+		output  string
+		isError bool
+	}
+	results := make([]toolResult, len(toolCalls))
+	var wg sync.WaitGroup
+
+	for i, call := range toolCalls {
+		if call.name == "" {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, c reActTool) {
+			defer wg.Done()
+			output := executeToolCall(state.activeTools, c)
+			results[idx] = toolResult{
+				index:   idx,
+				name:    c.name,
+				input:   c.input,
+				output:  output,
+				isError: isToolOutputError(output),
+			}
+		}(i, call)
+	}
+	wg.Wait()
+
+	// Collect results in order, update UI
+	var allObservations []string
+	for _, r := range results {
+		if r.name == "" {
+			continue
+		}
+		display := "  ⎿  " + formatToolDisplay(r.name, r.input, r.output)
+		role := "tool"
+		if r.isError {
+			role = "tool-error"
+		}
+		m.messages = append(m.messages, chatMessage{
+			role:     role,
+			content:  display,
+			toolName: r.name,
+			tokens:   0,
+		})
+		state.toolCalls = append(state.toolCalls, toolCallRecord{
+			toolName: r.name,
+			input:    r.input,
+			output:   r.output,
+			isError:  r.isError,
+		})
+		allObservations = append(allObservations, fmt.Sprintf(
+			"Observation (hasil dari tool %s): %s", r.name, r.output,
+		))
+	}
+	m.toolActivity = fmt.Sprintf("%d tools selesai", len(allObservations))
+
+	// Feed all observations back to LLM
+	state.messages = append(state.messages, core.Message{Role: "assistant", Content: resp.Content})
+	state.messages = append(state.messages, core.Message{Role: "user", Content: strings.Join(allObservations, "\n")})
+	state.iteration++
+
+	// Max iteration check
+	maxIterations := 8
+	if m.mode == modeAuto {
+		maxIterations = 16
+	}
+	switch m.effort {
+	case effortLow:
+		maxIterations = 4
+	case effortHigh:
+		maxIterations = 24
+	}
+	if state.iteration >= maxIterations {
+		m.state = stateReady
+		m.totalTokens += state.totalTokens
+		m.toolActivity = "✓ Selesai"
+		m.rebuildViewport()
+		m.statusMsg = ""
+		return m.textarea.Focus(), true
+	}
+
+	m.rebuildViewport()
+	return tea.Batch(
+		m.textarea.Focus(),
+		continueChatLoop(m.ai, m.ctx, state),
+	), false
 }
 
 func executeToolCall(toolList []tools.Tool, call reActTool) string {

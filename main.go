@@ -54,7 +54,7 @@ func ensureConfig(path string) {
   "profiles": [
     {
       "name": "Ollama Local",
-      "provider": "ollama",
+      "schema": "ollama",
       "model": "llama3.2",
       "api_key": "",
       "base_url": "http://localhost:11434"
@@ -119,18 +119,18 @@ func main() {
 	store := memory.NewInMemoryStore()
 
 	ai, err := ihandai.New(
-		ihandai.WithLLM(activeCfg.Provider, llmOpts...),
+		ihandai.WithLLM(activeCfg.Schema, llmOpts...),
 		ihandai.WithMemory(store),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM provider %q: %v\n", activeCfg.Provider, err)
+		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM %q: %v\n", activeCfg.Schema, err)
 		os.Exit(1)
 	}
 	defer ai.Close()
 
-	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", activeCfg.Provider, activeCfg.Model)
+	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", activeCfg.Schema, activeCfg.Model)
 
-	m := initModel(ai, store, activeCfg.Provider, activeCfg.Model, cfg.App.Session, allowedDir, *configPath)
+	m := initModel(ai, store, activeCfg.Schema, activeCfg.Model, cfg.App.Session, allowedDir, *configPath)
 
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {

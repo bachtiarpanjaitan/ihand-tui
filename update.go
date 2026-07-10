@@ -31,75 +31,27 @@ func (m model) Init() tea.Cmd {
 }
 
 func formatStreamForDisplay(content string) string {
-	// Cari tool call — tampilkan tool + path file (plain text)
+	// For actions: just track them, don't return label text.
+	// The activity indicator will show accumulated counts.
 	if strings.Contains(content, "Action:") {
-		var toolName string
-		var path string
-
-		lines := strings.Split(content, "\n")
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-
-			if strings.HasPrefix(trimmed, "Action:") {
-				action := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action:"))
-				if idx := strings.Index(action, "("); idx > 0 {
-					toolName = strings.TrimSpace(action[:idx])
-				} else {
-					toolName = action
-				}
-			}
-
-			// Cari path dari Action Input atau dari Action: inline
-			if toolName != "" && path == "" {
-				if strings.HasPrefix(trimmed, "Action Input:") {
-					input := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action Input:"))
-					if p := extractField(input, "\"path\""); p != "" {
-						path = p
-					}
-				}
-				if path == "" {
-					if p := extractField(line, "\"path\""); p != "" {
-						path = p
-					}
-				}
-				// Try extracting command for exec
-				if path == "" && toolName == "exec" {
-					if c := extractField(line, "\"command\""); c != "" {
-						path = c
-					}
-				}
-			}
-		}
-
-		if toolName != "" {
-			if path != "" {
-				return toolName + "(\"" + path + "\")"
-			}
-			return toolName + "()"
-		}
+		return "" // let trackAction handle counting
 	}
 
+	// Final Answer: return the answer text
 	if strings.Contains(content, "Final Answer:") {
 		if idx := strings.Index(content, "Final Answer:"); idx >= 0 {
 			answer := strings.TrimSpace(content[idx+13:])
 			if len(answer) > 2000 {
 				answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
 			}
-			return "Jawaban: " + answer
+			if answer != "" {
+				return answer
+			}
 		}
 	}
 
-	// Teks biasa — tampilkan sebagian agar user lihat proses real-time
-	display := strings.TrimSpace(content)
-	if len(display) > 400 {
-		display = display[:400] + "..."
-	}
-	if display != "" {
-		return display
-	}
 	return ""
 }
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -139,18 +91,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.streamStartTime.IsZero() {
 			m.streamStartTime = time.Now()
 			m.streamingContent = ""
-			// Add a placeholder message for the stream
-			m.messages = append(m.messages, chatMessage{
-				role:      "assistant",
-				content:   "",
-				timing:    0,
-				streaming: true,
-			})
+			m.activityContent = "Sedang Berpikir..."
+			// Update existing activity indicator or create new one
+			found := false
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" && m.messages[i].streaming {
+					m.messages[i].timing = 0
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.messages = append(m.messages, chatMessage{
+					role:      "assistant",
+					content:   "", // filled by tick handler
+					timing:    0,
+					streaming: true,
+				})
+			}
 		}
 
 		if !msg.done {
 			m.streamingContent += msg.content
-			m.messages[len(m.messages)-1].content = formatStreamForDisplay(m.streamingContent)
+			display := formatStreamForDisplay(m.streamingContent)
+			if display != "" {
+				// Final Answer text — update activity indicator, stop spinner
+				m.activityContent = display
+				m.messages[len(m.messages)-1].content = display
+				m.messages[len(m.messages)-1].streaming = false
+			} else if strings.Contains(m.streamingContent, "Action:") {
+				// Track action in counters for summary
+				m.trackActionFromContent(m.streamingContent)
+				summary := m.actionCounts.String()
+				if summary != "" {
+					m.activityContent = "Sedang Berpikir... (" + summary + ")"
+				} else {
+					m.activityContent = "Sedang Berpikir..."
+				}
+			}
 			// Update estimated tokens live during streaming
 			m.totalTokens = msg.state.totalTokens + countTokens(m.streamingContent)
 			// Parse task checklist dari streaming content
@@ -172,7 +150,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							output:   toolOutput,
 							isError:  isToolErr,
 						}
-						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+						display := "  ⎿  " + formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 						role := "tool"
 						if isToolErr {
 							role = "tool-error"
@@ -217,14 +195,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamStartTime = time.Time{}
 		m.streamingContent = ""
 
-		// Hapus placeholder assistant (ditandai dengan streaming == true)
-		for i := len(m.messages) - 1; i >= 0; i-- {
-			msg := m.messages[i]
-			if msg.role == "assistant" && msg.streaming {
-				m.messages = append(m.messages[:i], m.messages[i+1:]...)
-				break
-			}
-		}
+		// Keep activity indicator alive (don't mark as done)
+		// The next stream will update its content in-place
 
 		// Dispatch to the regular ReAct handler
 		return m, func() tea.Msg {
@@ -264,25 +236,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 			spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
 
-			// Status message (bottom bar)
-			m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
-
-			// Animate spinner on the streaming assistant message (not tool results)
+			// Animate spinner on the activity indicator (shown in viewport)
+			// activityContent is managed by streaming handler, tick only adds spinner
 			for i := len(m.messages) - 1; i >= 0; i-- {
-				msg := m.messages[i]
-				if msg.role == "assistant" {
-					base := msg.content
-					// Remove any existing spinner or dot prefix
-					for _, f := range spinnerFrames {
-						base = strings.TrimPrefix(base, f+" ")
-					}
-					base = strings.TrimLeft(base, ".")
-					base = strings.TrimSpace(base)
-					// Tambah spinner di depan — jika base kosong, tulis "Sedang Berpikir"
-					if base == "" {
-						m.messages[i].content = spinner + " Sedang Berpikir"
+				if m.messages[i].role == "assistant" && m.messages[i].streaming {
+					if m.activityContent != "" {
+						m.messages[i].content = spinner + " " + m.activityContent
 					} else {
-						m.messages[i].content = spinner + " " + base
+						m.messages[i].content = spinner + " Sedang Berpikir"
 					}
 					// Refresh viewport agar perubahan langsung terlihat
 					m.refreshViewport()
@@ -550,6 +511,8 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Clear file mentions after sending
 		m.fileMentions = make(map[string]string)
 		m.taskList = nil
+		m.actionCounts = actionCounters{}
+		m.activityContent = ""
 		m.recalcLayout()
 
 		content := m.buildConversation()
@@ -801,4 +764,14 @@ func (m model) handleConfirmDeny() (tea.Model, tea.Cmd) {
 		continueChatLoop(m.ai, m.ctx, state),
 		tickCmd(),
 	)
+}
+
+func extractSpinnerPrefix(s string) string {
+	spinners := []string{"\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2823", "\u280f"}
+	for _, sp := range spinners {
+		if strings.HasPrefix(s, sp+" ") {
+			return sp
+		}
+	}
+	return ""
 }
