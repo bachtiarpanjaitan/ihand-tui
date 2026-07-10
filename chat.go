@@ -306,12 +306,11 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			}
 		}
 
-		// Auto-complete task yang masih in_progress
+		// Auto-complete all tasks when the process finishes successfully
 		for i := range m.taskList {
-			if m.taskList[i].status == "in_progress" {
-				m.taskList[i].status = "completed"
-			}
+			m.taskList[i].status = "completed"
 		}
+		m.recalcLayout()
 
 		m.memory.Append(m.ctx, state.session, core.Message{
 			Role: "assistant", Content: resp.Content,
@@ -530,6 +529,11 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		tokens:  state.totalTokens,
 		timing:  time.Since(state.startTime),
 	})
+	for i := range m.taskList {
+		m.taskList[i].status = "completed"
+	}
+	m.recalcLayout()
+
 	m.state = stateReady
 	m.totalTokens += state.totalTokens
 
@@ -1139,24 +1143,26 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 
 // isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
 func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
-	// write_file, edit_file, dan exec harus selalu dikonfirmasi
-	if toolName == "write_file" || toolName == "edit_file" || toolName == "exec" {
+	// exec selalu membutuhkan konfirmasi manual dari user
+	if toolName == "exec" {
 		return false
 	}
-	if toolName == "create_directory" {
-		return mode == modeAuto || mode == modeEdit || trustWrite
+	// Jika folder sudah dipercaya (trustWrite == true), skip konfirmasi untuk semua operasi file
+	if toolName == "write_file" || toolName == "edit_file" || toolName == "create_directory" || toolName == "read_file" {
+		return trustWrite
 	}
 	return false
 }
 
 // isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
-func isToolAutoTrustedMode(mode chatMode, toolName string) bool {
-	// write_file, edit_file, dan exec harus selalu dikonfirmasi
-	if toolName == "write_file" || toolName == "edit_file" || toolName == "exec" {
+func isToolAutoTrustedMode(mode chatMode, trustWrite bool, toolName string) bool {
+	// exec selalu membutuhkan konfirmasi manual dari user
+	if toolName == "exec" {
 		return false
 	}
-	if toolName == "create_directory" {
-		return mode == modeAuto || mode == modeEdit
+	// Jika folder sudah dipercaya, skip konfirmasi untuk semua operasi file
+	if toolName == "write_file" || toolName == "edit_file" || toolName == "create_directory" || toolName == "read_file" {
+		return trustWrite
 	}
 	return false
 }

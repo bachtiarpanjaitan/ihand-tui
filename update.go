@@ -146,7 +146,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Early tool execution: eksekusi tool auto-trusted langsung saat streaming
 			if m.earlyTool.toolName == "" {
 				if toolCall, isFinal := parseReActResponse(m.streamingContent); toolCall.name != "" && !isFinal && toolCall.input != "{}" {
-					if isToolAutoTrustedMode(m.mode, toolCall.name) {
+					if isToolAutoTrustedMode(m.mode, m.trustWrite, toolCall.name) {
 						toolOutput := executeToolCall(msg.state.activeTools, toolCall)
 						isToolErr := strings.HasPrefix(toolOutput, "Error")
 						m.earlyTool = earlyToolExec{

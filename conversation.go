@@ -367,8 +367,17 @@ func (m *model) renderMarkdown(text string) string {
 	// Buat atau update renderer jika lebar berubah
 	if m.mdWidth != contentWidth || m.mdRenderer == nil {
 		m.mdWidth = contentWidth
+		// Custom style override to hide heading hashes/prefixes (H2-H6)
+		customStyle := []byte(`{
+			"h2": { "prefix": "" },
+			"h3": { "prefix": "" },
+			"h4": { "prefix": "" },
+			"h5": { "prefix": "" },
+			"h6": { "prefix": "" }
+		}`)
 		r, err := glamour.NewTermRenderer(
 			glamour.WithStandardStyle("dark"),
+			glamour.WithStylesFromJSONBytes(customStyle),
 			glamour.WithWordWrap(contentWidth),
 		)
 		if err != nil {
