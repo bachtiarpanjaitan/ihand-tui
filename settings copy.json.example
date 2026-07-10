@@ -1,7 +1,24 @@
 {
+  "profiles": [
+    {
+      "name": "Claude",
+      "provider": "anthropic",
+      "model": "claude-4.5-sonnet",
+      "api_key": "",
+      "base_url": ""
+    },
+    {
+      "name": "Deepseek",
+      "provider": "openai",
+      "model": "deepseek-v4-pro",
+      "api_key": "",
+      "base_url": "https://api.deepseek.com/v1"
+    }
+  ],
+  "active_profile": 1,
   "llm": {
-    "provider": "ollama",
-    "model": "llama3.2",
+    "provider": "",
+    "model": "",
     "api_key": "",
     "base_url": ""
   },
