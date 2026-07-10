@@ -338,6 +338,13 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 
 	case "esc":
+		// Cancel suggestions if visible
+		if len(m.suggestions) > 0 {
+			m.suggestions = nil
+			m.suggestionType = ""
+			m.selSugg = -1
+			return m, nil
+		}
 		if m.state == stateSelectingEffort {
 			m.state = stateReady
 			m.textarea.Focus()
@@ -457,6 +464,29 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.selSugg = -1
 				m.textarea.Reset()
 				return m.handleCommand(cmdStr)
+			}
+			if m.suggestionType == "file" {
+				// Accept the highlighted file suggestion (same as Tab)
+				currentValue := m.textarea.Value()
+				before := currentValue[:m.fileQueryStart]
+				afterAt := currentValue[m.fileQueryStart+1:]
+				spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
+				var after string
+				if spaceIdx >= 0 {
+					after = afterAt[spaceIdx:]
+				}
+				fullPath := m.suggestions[m.selSugg]
+				displayName := filepath.Base(strings.TrimSuffix(fullPath, "/"))
+				if strings.HasSuffix(fullPath, "/") {
+					displayName += "/"
+				}
+				m.fileMentions[displayName] = fullPath
+				m.textarea.SetValue(before + "@" + displayName + after)
+				m.textarea.CursorEnd()
+				m.suggestions = nil
+				m.suggestionType = ""
+				m.selSugg = -1
+				return m, nil
 			}
 		}
 
@@ -581,6 +611,10 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.fileMentions[displayName] = fullPath
 					m.textarea.SetValue(before + "@" + displayName + after)
 					m.textarea.CursorEnd()
+					// Clear suggestions after accepting a file mention
+					m.suggestions = nil
+					m.suggestionType = ""
+					m.selSugg = -1
 				} else {
 					// For commands, just cycle the selection, do not fill the textarea
 				}
