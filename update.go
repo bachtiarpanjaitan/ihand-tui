@@ -115,10 +115,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent += msg.content
 			display := formatStreamForDisplay(m.streamingContent)
 			if display != "" {
-				// Final Answer text — update activity indicator, stop spinner
+				// Final Answer text — update activity indicator, keep streaming=true
+				// so the next chunk reuses this placeholder instead of creating a new one.
 				m.activityContent = display
 				m.messages[len(m.messages)-1].content = display
-				m.messages[len(m.messages)-1].streaming = false
 			} else if strings.Contains(m.streamingContent, "Action:") {
 				// Track action in counters for summary
 				m.trackActionFromContent(m.streamingContent)
@@ -240,7 +240,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// activityContent is managed by streaming handler, tick only adds spinner
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].role == "assistant" && m.messages[i].streaming {
-					if m.activityContent != "" {
+					// Skip if showing Final Answer content (already set by chunk handler)
+					// Action summaries start with "Sedang Berpikir" and should get spinner prefix
+					if m.activityContent != "" && !strings.HasPrefix(m.activityContent, "Sedang Berpikir") {
+						// Final Answer content — don't overwrite with spinner
+					} else if m.activityContent != "" {
 						m.messages[i].content = spinner + " " + m.activityContent
 					} else {
 						m.messages[i].content = spinner + " Sedang Berpikir"

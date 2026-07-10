@@ -205,8 +205,8 @@ func renderConfirmPrompt(m *model) string {
 			Content string `json:"content"`
 		}
 		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
-		
-		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n", 
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("76")).Bold(true).Render("Menulis file"),
 			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
 		))
@@ -218,19 +218,19 @@ func renderConfirmPrompt(m *model) string {
 			Replace string `json:"replace"`
 		}
 		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
-		
-		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n", 
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("Mengedit file"),
 			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
 		))
-		
+
 		// Tampilkan bagian search & replace
 		b.WriteString("  " + treeDiffDelStyle.Render("- Cari:") + "\n")
 		searchLines := strings.Split(p.Search, "\n")
 		for _, line := range searchLines {
 			b.WriteString("    " + treeConnectorStyle.Render("│ ") + treeDiffDelStyle.Render(line) + "\n")
 		}
-		
+
 		b.WriteString("  " + treeDiffAddStyle.Render("+ Ganti:") + "\n")
 		replaceLines := strings.Split(p.Replace, "\n")
 		for _, line := range replaceLines {
@@ -242,11 +242,11 @@ func renderConfirmPrompt(m *model) string {
 			Command string `json:"command"`
 		}
 		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
-		
-		b.WriteString(fmt.Sprintf("  Tindakan: %s\n", 
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s\n",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("Menjalankan Perintah"),
 		))
-		b.WriteString(fmt.Sprintf("  $ %s\n", 
+		b.WriteString(fmt.Sprintf("  $ %s\n",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true).Render(p.Command),
 		))
 
@@ -258,7 +258,7 @@ func renderConfirmPrompt(m *model) string {
 
 	b.WriteString("\n  Apakah Anda mengizinkan tindakan ini?\n\n")
 
-	options := []string{"Allow (Izinkan)", "Deny (Tolak)"}
+	options := []string{"Izinkan", "Tolak"}
 	for i, opt := range options {
 		if i == m.confirmChoice {
 			b.WriteString(fmt.Sprintf("    ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
@@ -495,8 +495,8 @@ func renderSettings(m *model) string {
 				cursor := "█"
 				bgColor := lipgloss.Color("240") // normal edit
 				if m.settingsSelectAll {
-					cursor = ""                         // hide cursor when all selected
-					bgColor = lipgloss.Color("25")      // selection blue
+					cursor = ""                    // hide cursor when all selected
+					bgColor = lipgloss.Color("25") // selection blue
 				}
 				displayVal = m.settingsEditBuffer + cursor
 				valStyle := lipgloss.NewStyle().

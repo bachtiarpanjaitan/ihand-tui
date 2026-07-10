@@ -709,6 +709,15 @@ func formatToolDisplay(toolName, input, output string) string {
 			}
 		}
 		if path != "" {
+			// Extract file content from JSON output for tree-view display
+			content := extractJSONStringField(output, "content")
+			if content != "" {
+				const maxContentLen = 2000
+				if len(content) > maxContentLen {
+					content = content[:maxContentLen] + "\n... (file terpotong)"
+				}
+				return fmt.Sprintf("%s — Dibaca (%d bytes)\n%s", path, size, content)
+			}
 			return fmt.Sprintf("%s — Dibaca (%d bytes)", path, size)
 		}
 	case "write_file":
@@ -724,15 +733,15 @@ func formatToolDisplay(toolName, input, output string) string {
 					diffLines := strings.Split(diffText, "\n")
 					var b strings.Builder
 					// Git-style diff header
-					b.WriteString(fmt.Sprintf("  --- a/%s\n", path))
-					b.WriteString(fmt.Sprintf("  +++ b/%s\n", path))
+					b.WriteString(fmt.Sprintf("--- a/%s\n", path))
+					b.WriteString(fmt.Sprintf("+++ b/%s\n", path))
 					for _, line := range diffLines {
 						if len(line) > 0 {
 							switch line[0] {
 							case '+':
-								b.WriteString("  \033[32m" + line + "\033[0m\n")
+								b.WriteString(line + "\n")
 							case '-':
-								b.WriteString("  \033[31m" + line + "\033[0m\n")
+								b.WriteString(line + "\n")
 							// Skip context lines (starting with space) for cleaner diff
 							}
 						}
@@ -755,17 +764,17 @@ func formatToolDisplay(toolName, input, output string) string {
 						}
 					}
 				}
-				// Claude Code-style: summary + diff preview with tree continuation
+				// Summary + diff content (renderToolTree adds tree connectors)
 				var b strings.Builder
 				b.WriteString(fmt.Sprintf("%s — +%d/-%d  ✓  Ditulis (%d bytes)", path, addCount, delCount, size))
 				const maxPreviewLines = 20
 				diffLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
 				if len(diffLines) > maxPreviewLines {
 					diffLines = diffLines[:maxPreviewLines]
-					diffLines = append(diffLines, "  ...")
+					diffLines = append(diffLines, "...")
 				}
 				for _, line := range diffLines {
-					b.WriteString("\n  │  " + line)
+					b.WriteString("\n" + line)
 				}
 				return b.String()
 			}
@@ -934,6 +943,23 @@ func extractField(raw, field string) string {
 		end = len(rest)
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// extractJSONStringField extracts a string field value from a JSON object,
+// properly handling JSON escape sequences (\\n, \\t, \\\", etc.).
+// This is more robust than extractField for multi-line string values like file content.
+func extractJSONStringField(raw, field string) string {
+	// Parse the raw JSON into a generic map to extract the field
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return ""
+	}
+	if val, ok := obj[field]; ok {
+		if s, ok := val.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 // truncateStr memotong string ke panjang maksimal.
