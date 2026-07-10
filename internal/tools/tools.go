@@ -326,6 +326,39 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	if err != nil {
 		return json.RawMessage(fmt.Sprintf(`{"error": "file tidak ditemukan: %s"}`, params.Path)), nil
 	}
+
+	// Jika path adalah direktori, otomatis kembalikan listing isinya
+	if info.IsDir() {
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca direktori: %s"}`, err.Error())), nil
+		}
+
+		var files []map[string]any
+		for _, e := range entries {
+			fi, _ := e.Info()
+			size := int64(0)
+			isDir := e.IsDir()
+			if fi != nil && !isDir {
+				size = fi.Size()
+			}
+			files = append(files, map[string]any{
+				"name":  e.Name(),
+				"isDir": isDir,
+				"size":  size,
+			})
+		}
+
+		result, _ := json.Marshal(map[string]any{
+			"path":    params.Path,
+			"is_dir":  true,
+			"count":   len(files),
+			"files":   files,
+			"message": fmt.Sprintf("%s adalah direktori dengan %d item", params.Path, len(files)),
+		})
+		return json.RawMessage(result), nil
+	}
+
 	if info.Size() > 1_000_000 {
 		return json.RawMessage(fmt.Sprintf(`{"error": "file terlalu besar (max 1MB): %d bytes"}`, info.Size())), nil
 	}
@@ -1131,13 +1164,19 @@ func resolveSafePath(allowedDir, relPath string) (string, error) {
 		return "", fmt.Errorf("path traversal tidak diizinkan: %s", relPath)
 	}
 
-	// Resolve absolute path
+	// Resolve absolute path dari allowedDir
 	absAllowed, err := filepath.Abs(allowedDir)
 	if err != nil {
 		return "", fmt.Errorf("gagal resolve allowedDir: %w", err)
 	}
 
-	fullPath := filepath.Join(absAllowed, clean)
+	var fullPath string
+	if filepath.IsAbs(clean) {
+		fullPath = clean
+	} else {
+		fullPath = filepath.Join(absAllowed, clean)
+	}
+
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("gagal resolve path: %w", err)

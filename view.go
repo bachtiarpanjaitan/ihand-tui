@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -188,17 +189,82 @@ func renderEffortSelector(m *model) string {
 }
 
 func renderConfirmPrompt(m *model) string {
-	options := []string{"Allow", "Deny"}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Izinkan tool %s?\n\n", toolStyle().Render(m.pendingTool.name)))
+
+	// Header
+	b.WriteString(titleStyle().Render(" Konfirmasi Tindakan Keamanan"))
+	b.WriteString("\n\n")
+
+	// Detail tindakan
+	switch m.pendingTool.name {
+	case "write_file":
+		var p struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+		
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n", 
+			lipgloss.NewStyle().Foreground(lipgloss.Color("76")).Bold(true).Render("Menulis file"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
+		))
+
+	case "edit_file":
+		var p struct {
+			Path    string `json:"path"`
+			Search  string `json:"search"`
+			Replace string `json:"replace"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+		
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n", 
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("Mengedit file"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
+		))
+		
+		// Tampilkan bagian search & replace
+		b.WriteString("  " + treeDiffDelStyle.Render("- Cari:") + "\n")
+		searchLines := strings.Split(p.Search, "\n")
+		for _, line := range searchLines {
+			b.WriteString("    " + treeConnectorStyle.Render("│ ") + treeDiffDelStyle.Render(line) + "\n")
+		}
+		
+		b.WriteString("  " + treeDiffAddStyle.Render("+ Ganti:") + "\n")
+		replaceLines := strings.Split(p.Replace, "\n")
+		for _, line := range replaceLines {
+			b.WriteString("    " + treeConnectorStyle.Render("│ ") + treeDiffAddStyle.Render(line) + "\n")
+		}
+
+	case "exec":
+		var p struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+		
+		b.WriteString(fmt.Sprintf("  Tindakan: %s\n", 
+			lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("Menjalankan Perintah"),
+		))
+		b.WriteString(fmt.Sprintf("  $ %s\n", 
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true).Render(p.Command),
+		))
+
+	default:
+		// Fallback
+		b.WriteString(fmt.Sprintf("  Tindakan: Menjalankan tool %s\n", toolStyle().Render(m.pendingTool.name)))
+		b.WriteString(fmt.Sprintf("  Input: %s\n", m.pendingTool.input))
+	}
+
+	b.WriteString("\n  Apakah Anda mengizinkan tindakan ini?\n\n")
+
+	options := []string{"Allow (Izinkan)", "Deny (Tolak)"}
 	for i, opt := range options {
 		if i == m.confirmChoice {
-			b.WriteString(fmt.Sprintf("  ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
+			b.WriteString(fmt.Sprintf("    ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
 		} else {
-			b.WriteString(fmt.Sprintf("    %s\n", dimStyle.Render(opt)))
+			b.WriteString(fmt.Sprintf("      %s\n", dimStyle.Render(opt)))
 		}
 	}
-	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Y/N"))
+	b.WriteString(dimStyle.Render("\n  ↑↓ navigasi  •  Enter pilih  •  Y/N"))
 	return b.String()
 }
 

@@ -168,10 +168,12 @@ func (e effortLevel) Tag() string {
 }
 
 type chatMessage struct {
-	role    string
-	content string
-	tokens  int
-	timing  time.Duration
+	role      string
+	content   string
+	toolName  string // nama tool (untuk tree-view rendering)
+	tokens    int
+	timing    time.Duration
+	streaming bool // true jika pesan masih dalam proses streaming
 }
 
 // taskItem represents one item in the plan/task checklist.

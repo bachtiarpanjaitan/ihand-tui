@@ -99,7 +99,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	allowedDir := cfg.App.AllowedDir
+	// Selalu gunakan directory terminal saat ini (.) sebagai default agar
+	// file operations terikat pada folder tempat terminal dibuka.
+	allowedDir := "."
 	if flag.NArg() > 0 {
 		allowedDir = flag.Arg(0)
 	}

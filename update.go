@@ -31,7 +31,7 @@ func (m model) Init() tea.Cmd {
 }
 
 func formatStreamForDisplay(content string) string {
-	// Cari tool call — tampilkan tool + path file
+	// Cari tool call — tampilkan tool + path file (plain text)
 	if strings.Contains(content, "Action:") {
 		var toolName string
 		var path string
@@ -62,12 +62,18 @@ func formatStreamForDisplay(content string) string {
 						path = p
 					}
 				}
+				// Try extracting command for exec
+				if path == "" && toolName == "exec" {
+					if c := extractField(line, "\"command\""); c != "" {
+						path = c
+					}
+				}
 			}
 		}
 
 		if toolName != "" {
 			if path != "" {
-				return toolName + "(" + path + ")"
+				return toolName + "(\"" + path + "\")"
 			}
 			return toolName + "()"
 		}
@@ -118,9 +124,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = ""
 			// Add a placeholder message for the stream
 			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: "",
-				timing:  0,
+				role:      "assistant",
+				content:   "",
+				timing:    0,
+				streaming: true,
 			})
 		}
 
@@ -157,15 +164,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						placeholderIdx := len(m.messages) - 1
 						// Replace the streaming placeholder with the tool result (avoids duplication)
 						m.messages[placeholderIdx] = chatMessage{
-							role:    role,
-							content: display,
-							tokens:  0,
+							role:     role,
+							content:  display,
+							toolName: toolCall.name,
+							tokens:   0,
 						}
 						// Add a NEW placeholder for remaining stream content
 						m.messages = append(m.messages, chatMessage{
-							role:    "assistant",
-							content: "",
-							timing:  0,
+							role:      "assistant",
+							content:   "",
+							timing:    0,
+							streaming: true,
 						})
 						m.refreshViewport()
 					}
@@ -191,10 +200,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamStartTime = time.Time{}
 		m.streamingContent = ""
 
-		// Hapus placeholder assistant (kosong atau "Jawaban:" dari formatStreamForDisplay)
+		// Hapus placeholder assistant (ditandai dengan streaming == true)
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			msg := m.messages[i]
-			if msg.role == "assistant" && (msg.content == "" || strings.HasPrefix(msg.content, "Jawaban:")) {
+			if msg.role == "assistant" && msg.streaming {
 				m.messages = append(m.messages[:i], m.messages[i+1:]...)
 				break
 			}
@@ -732,9 +741,10 @@ func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
 	}
 	m.toolActivity = fmt.Sprintf("%s \u2014 Selesai", path)
 	m.messages = append(m.messages, chatMessage{
-		role:    "tool",
-		content: display,
-		tokens:  0,
+		role:     "tool",
+		content:  display,
+		toolName: m.pendingTool.name,
+		tokens:   0,
 	})
 	m.state = stateThinking
 	m.pendingTool = reActTool{}

@@ -141,13 +141,13 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 		messages = append(messages, history...)
 
 		initialState := chatLoopState{
-			session:         session,
-			messages:        messages,
-			activeTools:     activeTools,
-			iteration:       0,
-			toolCalls:       nil,
-			totalTokens:     countTokens(input),
-			startTime:       time.Now(),
+			session:     session,
+			messages:    messages,
+			activeTools: activeTools,
+			iteration:   0,
+			toolCalls:   nil,
+			totalTokens: countTokens(input),
+			startTime:   time.Now(),
 		}
 
 		if streamProvider != nil {
@@ -211,7 +211,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
 			role:    "error",
-			content: "❌ LLM Error: " + msg.err.Error(),
+			content: "LLM Error: " + msg.err.Error(),
 		})
 		m.rebuildViewport()
 		return m.textarea.Focus(), true
@@ -233,7 +233,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
 			role:    "error",
-			content: "❌ LLM Error: respons kosong dari API",
+			content: "LLM Error: respons kosong dari API",
 		})
 		m.rebuildViewport()
 		return m.textarea.Focus(), true
@@ -252,7 +252,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.statusMsg = ""
 		m.messages = append(m.messages, chatMessage{
 			role:    "error",
-			content: "❌ LLM Error: respons API kosong — cek API key atau koneksi",
+			content: "LLM Error: respons API kosong — cek API key atau koneksi",
 		})
 		m.rebuildViewport()
 		return m.textarea.Focus(), true
@@ -357,7 +357,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					m.earlyTool = earlyToolExec{} // reset
 				} else {
 					toolOutput = executeToolCall(state.activeTools, toolCall)
-					isToolError = strings.HasPrefix(toolOutput, "Error")
+					isToolError = isToolOutputError(toolOutput)
 					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
 					role := "tool"
 					if isToolError {
@@ -365,9 +365,10 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					}
 					m.toolActivity = fmt.Sprintf("%s", toolCall.name)
 					m.messages = append(m.messages, chatMessage{
-						role:    role,
-						content: display,
-						tokens:  0,
+						role:     role,
+						content:  display,
+						toolName: toolCall.name,
+						tokens:   0,
 					})
 				}
 				state.toolCalls = append(state.toolCalls, toolCallRecord{
@@ -429,7 +430,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		}
 
 		toolOutput := executeToolCall(state.activeTools, toolCall)
-		isToolError := strings.HasPrefix(toolOutput, "Error")
+		isToolError := isToolOutputError(toolOutput)
 
 		// Show tool call in both activity bar + conversation
 		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
@@ -441,9 +442,10 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		m.toolActivity = fmt.Sprintf("%s", toolCall.name)
 		// Conversation keeps full history
 		m.messages = append(m.messages, chatMessage{
-			role:    role,
-			content: display,
-			tokens:  0,
+			role:     role,
+			content:  display,
+			toolName: toolCall.name,
+			tokens:   0,
 		})
 
 		state.toolCalls = append(state.toolCalls, toolCallRecord{
@@ -566,6 +568,20 @@ func (m *model) refreshViewport() {
 // Tool display formatting
 // ---------------------------------------------------------------------------
 
+// isToolOutputError checks whether tool output indicates an error.
+// Checks both string prefix ("Error") and JSON "error" field.
+func isToolOutputError(output string) bool {
+	if strings.HasPrefix(output, "Error") {
+		return true
+	}
+	// Check for JSON "error" field
+	errField := extractField(output, `"error"`)
+	if errField != "" {
+		return true
+	}
+	return false
+}
+
 // formatToolDisplay returns a user-friendly display string for a tool call result.
 // Uses simple string extraction to avoid issues with imperfect JSON from tool output.
 func formatToolDisplay(toolName, input, output string) string {
@@ -573,6 +589,10 @@ func formatToolDisplay(toolName, input, output string) string {
 	path := extractField(output, `"path"`)
 	if path == "" {
 		path = extractField(output, `"path\":`)
+	}
+	// Fallback: extract path from input params if output lacks it
+	if path == "" {
+		path = extractField(input, `"path"`)
 	}
 
 	// Check for error
@@ -637,6 +657,16 @@ func formatToolDisplay(toolName, input, output string) string {
 			return fmt.Sprintf("%s: baris %s-%s", path, startLine, endLine)
 		}
 	case "read_file":
+		// Check if this was a directory auto-listing
+		isDirStr := extractField(output, `"is_dir"`)
+		if isDirStr == "true" {
+			countStr := extractField(output, `"count"`)
+			dirCount := 0
+			fmt.Sscanf(countStr, "%d", &dirCount)
+			if path != "" {
+				return fmt.Sprintf("%s — Direktori (%d item)", path, dirCount)
+			}
+		}
 		if path != "" {
 			return fmt.Sprintf("%s — Dibaca (%d bytes)", path, size)
 		}
@@ -653,6 +683,9 @@ func formatToolDisplay(toolName, input, output string) string {
 				if err := json.Unmarshal([]byte(`"`+diffStr+`"`), &diffText); err == nil && diffText != "" {
 					diffLines := strings.Split(diffText, "\n")
 					var b strings.Builder
+					// Git-style diff header
+					b.WriteString(fmt.Sprintf("  --- a/%s\n", path))
+					b.WriteString(fmt.Sprintf("  +++ b/%s\n", path))
 					for _, line := range diffLines {
 						if len(line) > 0 {
 							switch line[0] {
@@ -660,8 +693,7 @@ func formatToolDisplay(toolName, input, output string) string {
 								b.WriteString("  \033[32m" + line + "\033[0m\n")
 							case '-':
 								b.WriteString("  \033[31m" + line + "\033[0m\n")
-							default:
-								b.WriteString("  " + line + "\n")
+							// Skip context lines (starting with space) for cleaner diff
 							}
 						}
 					}
@@ -670,21 +702,27 @@ func formatToolDisplay(toolName, input, output string) string {
 			}
 			if success || strings.Contains(output, "berhasil") {
 				if previewDiff != "" {
-					// Hitung baris dari diff untuk tampilan yang akurat
-					diffLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
-					lineCount := 0
-					for _, l := range diffLines {
-						if strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") {
-							lineCount++
+					// Count additions and deletions separately
+					var diffText string
+					json.Unmarshal([]byte(`"`+diffStr+`"`), &diffText)
+					addCount, delCount := 0, 0
+					for _, line := range strings.Split(diffText, "\n") {
+						if len(line) > 0 {
+							if line[0] == '+' {
+								addCount++
+							} else if line[0] == '-' {
+								delCount++
+							}
 						}
 					}
-					// Batasi preview diff \u2014 untuk file baru, jangan tampilkan full konten
-					const maxPreviewLines = 15
+					// Batasi preview diff
+					const maxPreviewLines = 25
+					diffDisplayLines := strings.Split(strings.TrimSpace(previewDiff), "\n")
 					shortDiff := previewDiff
-					if len(diffLines) > maxPreviewLines {
-						shortDiff = strings.Join(diffLines[:maxPreviewLines], "\n") + "\n..."
+					if len(diffDisplayLines) > maxPreviewLines {
+						shortDiff = strings.Join(diffDisplayLines[:maxPreviewLines], "\n") + "\n  ..."
 					}
-					return fmt.Sprintf("%s \u2014 %d byte (%d baris diubah)\n%s", path, size, lineCount, shortDiff)
+					return fmt.Sprintf("%s — %d byte (+%d/-%d)\n%s", path, size, addCount, delCount, shortDiff)
 				}
 				// Fallback: content preview (jika diff kosong)
 				c := extractField(input, `"content"`)
@@ -1015,7 +1053,7 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("- Centang [x] SETELAH semua file dalam task selesai\n")
 		b.WriteString("- Jangan buat task per-file, buat task per-fitur\n")
 		b.WriteString("- Final Answer hanya jika SEMUA task tercentang\n\n")
-		case modeAuto:
+	case modeAuto:
 		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM.\n")
 		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user.\n")
 		b.WriteString("!!! INSTRUKSI WAJIB – BACA DENGAN SEKSAMA !!!\n")
@@ -1101,18 +1139,26 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 
 // isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
 func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
-	if toolName != "write_file" && toolName != "edit_file" && toolName != "create_directory" && toolName != "exec" {
+	// write_file, edit_file, dan exec harus selalu dikonfirmasi
+	if toolName == "write_file" || toolName == "edit_file" || toolName == "exec" {
 		return false
 	}
-	return mode == modeAuto || mode == modeEdit || trustWrite
+	if toolName == "create_directory" {
+		return mode == modeAuto || mode == modeEdit || trustWrite
+	}
+	return false
 }
 
 // isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
 func isToolAutoTrustedMode(mode chatMode, toolName string) bool {
-	if toolName != "write_file" && toolName != "edit_file" && toolName != "create_directory" && toolName != "exec" {
+	// write_file, edit_file, dan exec harus selalu dikonfirmasi
+	if toolName == "write_file" || toolName == "edit_file" || toolName == "exec" {
 		return false
 	}
-	return mode == modeAuto || mode == modeEdit
+	if toolName == "create_directory" {
+		return mode == modeAuto || mode == modeEdit
+	}
+	return false
 }
 
 // parseTaskList extracts checklist items from LLM streaming content.
@@ -1199,12 +1245,12 @@ func parseTaskList(content string, oldTasks []taskItem) []taskItem {
 func readProjectConfigs(allowedDir string) string {
 	// Daftar config file yang akan diperiksa (urut prioritas)
 	configFiles := []struct {
-		path string
+		path  string
 		label string
 	}{
-		{"go.mod", "Go Module"},{"package.json", "Node.js"},{"Cargo.toml", "Rust"},{"pyproject.toml", "Python (pyproject)"},
-		{"requirements.txt", "Python (pip)"},{"Gemfile", "Ruby"},{"composer.json", "PHP"},{"pom.xml", "Maven"},{"build.gradle", "Gradle"},
-		{"Makefile", "Makefile"},{"Dockerfile", "Docker"},{"docker-compose.yml", "Docker Compose"},{"tsconfig.json", "TypeScript"},
+		{"go.mod", "Go Module"}, {"package.json", "Node.js"}, {"Cargo.toml", "Rust"}, {"pyproject.toml", "Python (pyproject)"},
+		{"requirements.txt", "Python (pip)"}, {"Gemfile", "Ruby"}, {"composer.json", "PHP"}, {"pom.xml", "Maven"}, {"build.gradle", "Gradle"},
+		{"Makefile", "Makefile"}, {"Dockerfile", "Docker"}, {"docker-compose.yml", "Docker Compose"}, {"tsconfig.json", "TypeScript"},
 	}
 
 	absDir, err := filepath.Abs(allowedDir)
