@@ -38,6 +38,7 @@ type settingsField int
 
 const (
 	settingsProfile settingsField = iota
+	settingsProfileName
 	settingsProvider
 	settingsModel
 	settingsAPIKey
@@ -311,6 +312,7 @@ type model struct {
 	settingsCurrentField settingsField // field yang sedang dipilih di settings
 	settingsEditMode     bool          // true saat sedang mengedit nilai field
 	settingsEditBuffer   string        // buffer untuk input nilai baru
+	settingsSelectAll    bool          // true saat seluruh buffer terseleksi (Cmd+A)
 	settingsProfileSel   int           // index yang dipilih di daftar profil
 	settingsShowProfileList bool      // true saat menampilkan daftar profil
 

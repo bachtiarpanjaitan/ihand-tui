@@ -450,6 +450,7 @@ func renderSettings(m *model) string {
 	activeCfg := cfg.ActiveConfig()
 	fields := []fieldDef{
 		{label: "Profile", value: profileName},
+		{label: "Nama Profil", value: profileName},
 		{label: "Provider", value: activeCfg.Provider},
 		{label: "Model", value: activeCfg.Model},
 		{label: "API Key", value: maskAPIKey(activeCfg.APIKey)},
@@ -465,10 +466,11 @@ func renderSettings(m *model) string {
 			maxLabelW = len(f.label)
 		}
 	}
+	// Extra padding so label doesn't wrap
+	maxLabelW += 5
 
-	sepLine := separatorStyle.Render(strings.Repeat("─", boxW))
-
-	b.WriteString(sepLine)
+	// Top border
+	b.WriteString(dimStyle.Render("\u250c" + strings.Repeat("\u2500", boxW-2) + "\u2510"))
 	b.WriteString("\n")
 
 	for i, f := range fields {
@@ -479,6 +481,7 @@ func renderSettings(m *model) string {
 			labelStyle := lipgloss.NewStyle().
 				Width(maxLabelW).
 				Align(lipgloss.Left).
+				PaddingRight(3).
 				Foreground(lipgloss.Color("255")).
 				Bold(true)
 			indicator := " ▸ "
@@ -487,15 +490,15 @@ func renderSettings(m *model) string {
 			var displayVal string
 			if m.settingsEditMode {
 				// Editing: show the buffer with cursor
-				if i == int(settingsAPIKey) {
-					// For API key, show masked value when not editing, raw when editing
-					displayVal = m.settingsEditBuffer + "█"
-					// But only show the input unmasked while actively typing
-				} else {
-					displayVal = m.settingsEditBuffer + "█"
+				cursor := "█"
+				bgColor := lipgloss.Color("240") // normal edit
+				if m.settingsSelectAll {
+					cursor = ""                         // hide cursor when all selected
+					bgColor = lipgloss.Color("25")      // selection blue
 				}
+				displayVal = m.settingsEditBuffer + cursor
 				valStyle := lipgloss.NewStyle().
-					Background(lipgloss.Color("240")).
+					Background(bgColor).
 					Foreground(lipgloss.Color("255")).
 					Padding(0, 1)
 				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(displayVal)))
@@ -504,28 +507,43 @@ func renderSettings(m *model) string {
 				valStyle := lipgloss.NewStyle().
 					Foreground(lipgloss.Color("255")).
 					Padding(0, 1)
-				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(f.value)))
+				displayVal := valStyle.Render(f.value)
+				// Profile field: append switch hint
+				if i == int(settingsProfile) {
+					hintStyle := lipgloss.NewStyle().
+						Foreground(lipgloss.Color("243"))
+					displayVal += "  " + hintStyle.Render("▶ enter untuk pilih profil")
+				}
+				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, displayVal))
 			}
 		} else {
 			// Non-current field: dimmed
 			labelStyle := lipgloss.NewStyle().
 				Width(maxLabelW).
 				Align(lipgloss.Left).
+				PaddingRight(3).
 				Foreground(dimColor)
 			label := labelStyle.Render(f.label + ":")
 			valStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252")).
 				Padding(0, 1)
-			b.WriteString(fmt.Sprintf("   %s %s\n", label, valStyle.Render(f.value)))
+			displayVal := valStyle.Render(f.value)
+			// Profile field: append switch hint (dimmed version)
+			if i == int(settingsProfile) {
+				hintStyle := lipgloss.NewStyle().
+					Foreground(dimColor)
+				displayVal += "  " + hintStyle.Render("▶ enter untuk pilih profil")
+			}
+			b.WriteString(fmt.Sprintf("   %s %s\n", label, displayVal))
 		}
 	}
 
-	b.WriteString(sepLine)
+	b.WriteString(dimStyle.Render("\u2514" + strings.Repeat("\u2500", boxW-2) + "\u2518"))
 	b.WriteString("\n")
 
 	// Controls hint
 	controls := dimStyle.Render(
-		"↑↓ navigasi  |  Enter edit (Profile: lihat daftar)  |  Esc batal  |  Ctrl+S simpan & keluar",
+		"↑↓ navigasi  |  Enter: Profile → pilih/switch, lainnya → edit  |  Esc batal  |  Ctrl+S simpan",
 	)
 	b.WriteString(controls)
 	b.WriteString("\n")
@@ -540,9 +558,6 @@ func renderSettings(m *model) string {
 // renderProfileList renders the profile selection sub-view.
 func renderProfileList(m *model) string {
 	profiles := m.settingsConfig.Profiles
-	if len(profiles) == 0 {
-		return "Tidak ada profil."
-	}
 
 	boxW := m.width - 4
 	if boxW < 40 {
@@ -557,6 +572,8 @@ func renderProfileList(m *model) string {
 		Render("Pilih Profil LLM")
 	b.WriteString(title)
 	b.WriteString("\n\n")
+
+	addNewIdx := len(profiles)
 
 	for i, p := range profiles {
 		isSelected := i == m.settingsProfileSel
@@ -589,8 +606,21 @@ func renderProfileList(m *model) string {
 		b.WriteString(line)
 	}
 
+	// Add New Profile option
+	atEnd := m.settingsProfileSel == addNewIdx
+	addPrefix := "  "
+	if atEnd {
+		addPrefix = " ▸"
+	}
+	addStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("39"))
+	if atEnd {
+		addStyle = addStyle.Bold(true)
+	}
+	b.WriteString(fmt.Sprintf("%s %s\n", addPrefix, addStyle.Render("+ Add New Profile")))
+
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih & switch  •  Esc batal"))
+	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih/switch  •  + Add New Profile  •  Esc batal"))
 	return lipgloss.NewStyle().
 		Width(boxW).
 		Padding(0, 2).

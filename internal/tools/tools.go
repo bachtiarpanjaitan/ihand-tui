@@ -188,10 +188,10 @@ func NewEditFileTool(allowedDir string) *EditFileTool {
 func (t *EditFileTool) Name() string { return "edit_file" }
 
 func (t *EditFileTool) Description() string {
-	return "Mengedit baris tertentu dalam file yang sudah ada menggunakan search & replace. " +
+	return "Mengedit file yang sudah ada menggunakan search & replace (exact match). " +
 		"Tidak perlu mengirim seluruh konten file — cukup kirim bagian yang ingin diubah. " +
 		"Cari blok teks yang UNIK dalam file, lalu ganti dengan teks baru. " +
-		"search HARUS cocok persis dengan teks yang ada di file (termasuk spasi/indentasi). " +
+		"Trailing whitespace (spasi/tab di akhir baris) akan diabaikan saat matching. " +
 		"Gunakan read_file dulu untuk melihat konten file, lalu copy-paste bagian yang ingin diubah. " +
 		"Jauh lebih hemat token daripada write_file untuk file besar. " +
 		"Contoh: edit_file({\"path\": \"main.go\", \"search\": \"fmt.Println(\\\"hello\\\")\", \"replace\": \"fmt.Println(\\\"hi\\\")\"})"
@@ -202,7 +202,7 @@ func (t *EditFileTool) InputSchema() *core.JSONSchema {
 		Type: "object",
 		Properties: map[string]*core.JSONSchemaProp{
 			"path":    {Type: "string", Description: "Path relatif ke file yang akan diedit"},
-			"search":  {Type: "string", Description: "Teks persis yang akan dicari (case-sensitive, termasuk spasi/indentasi). Harus UNIK dalam file."},
+			"search":  {Type: "string", Description: "Teks persis yang akan dicari (case-sensitive). Trailing whitespace diabaikan. Harus UNIK dalam file."},
 			"replace": {Type: "string", Description: "Teks pengganti untuk menggantikan search text"},
 		},
 		Required: []string{"path", "search", "replace"},
@@ -238,17 +238,42 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	}
 	oldStr := string(oldContent)
 
-	// Hitung jumlah occurences
-	count := strings.Count(oldStr, params.Search)
+	// Normalisasi line endings (CRLF → LF)
+	oldStr = strings.ReplaceAll(oldStr, "\r\n", "\n")
+	searchStr := strings.ReplaceAll(params.Search, "\r\n", "\n")
+	replaceStr := strings.ReplaceAll(params.Replace, "\r\n", "\n")
+
+	// --- Attempt 1: Exact match ---
+	count := strings.Count(oldStr, searchStr)
+
+	// --- Attempt 2: Trim trailing whitespace per line ---
+	var matchedOrig string // original (untrimmed) text that matched
 	if count == 0 {
-		return json.RawMessage(fmt.Sprintf(`{"error": "search text tidak ditemukan di file %s. Pastikan spasi dan indentasi persis sama. Gunakan read_file untuk melihat konten asli file."}`, params.Path)), nil
-	}
-	if count > 1 {
-		return json.RawMessage(fmt.Sprintf(`{"error": "search text ditemukan %d kali di file %s. Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`, count, params.Path)), nil
+		var trimCount int
+		trimCount, matchedOrig = tryTrimMatch(oldStr, searchStr)
+		if trimCount == 0 {
+			// Build informative error with file excerpt
+			excerpt := buildFileExcerpt(oldStr, searchStr)
+			return json.RawMessage(fmt.Sprintf(
+				`{"error": "search text tidak ditemukan di file %s (setelah normalisasi whitespace). %s"}`,
+				params.Path, excerpt)), nil
+		}
+		if trimCount > 1 {
+			return json.RawMessage(fmt.Sprintf(
+				`{"error": "search text ditemukan %d kali di file %s (setelah trimming trailing whitespace). Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`,
+				trimCount, params.Path)), nil
+		}
+		// trimCount == 1 — use the matched original text for replacement
+		count = 1
+		searchStr = matchedOrig
+	} else if count > 1 {
+		return json.RawMessage(fmt.Sprintf(
+			`{"error": "search text ditemukan %d kali di file %s. Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`,
+			count, params.Path)), nil
 	}
 
 	// Lakukan replace (hanya 1 kali karena sudah dipastikan unik)
-	newContent := strings.Replace(oldStr, params.Search, params.Replace, 1)
+	newContent := strings.Replace(oldStr, searchStr, replaceStr, 1)
 
 	// Tulis file
 	if err := os.WriteFile(fullPath, []byte(newContent), 0644); err != nil {
@@ -265,8 +290,8 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	diff := computeDiff(oldStr, newContent)
 
 	// Hitung statistik perubahan
-	oldLines := strings.Count(params.Search, "\n") + 1
-	newLines := strings.Count(params.Replace, "\n") + 1
+	oldLines := strings.Count(searchStr, "\n") + 1
+	newLines := strings.Count(replaceStr, "\n") + 1
 
 	result, _ := json.Marshal(map[string]any{
 		"success":       true,
@@ -276,6 +301,114 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 		"diff":          diff,
 	})
 	return json.RawMessage(result), nil
+}
+
+// ---------------------------------------------------------------------------
+// Edit helpers
+// ---------------------------------------------------------------------------
+
+// tryTrimMatch attempts to match search in content by trimming trailing
+// whitespace (spaces and tabs) from each line. Returns the match count and,
+// for unique matches, the original (untrimmed) text from content.
+func tryTrimMatch(content, search string) (int, string) {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+
+	if len(searchLines) == 0 || len(contentLines) == 0 {
+		return 0, ""
+	}
+
+	// Build trimmed versions
+	contentTrimmed := make([]string, len(contentLines))
+	for i, l := range contentLines {
+		contentTrimmed[i] = strings.TrimRight(l, " \t")
+	}
+	searchTrimmed := make([]string, len(searchLines))
+	for i, l := range searchLines {
+		searchTrimmed[i] = strings.TrimRight(l, " \t")
+	}
+
+	// Slide through content looking for exact trimmed match
+	searchLen := len(searchTrimmed)
+	var matches []int // starting line indices in contentLines
+
+	for i := 0; i <= len(contentTrimmed)-searchLen; i++ {
+		match := true
+		for j := 0; j < searchLen; j++ {
+			if contentTrimmed[i+j] != searchTrimmed[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			matches = append(matches, i)
+		}
+	}
+
+	if len(matches) == 1 {
+		matchedOrig := strings.Join(contentLines[matches[0]:matches[0]+searchLen], "\n")
+		return 1, matchedOrig
+	}
+
+	return len(matches), ""
+}
+
+// buildFileExcerpt returns a helpful excerpt from the file near where the
+// search text's first line was found (after trimming), or the top of the file.
+func buildFileExcerpt(content, search string) string {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+
+	// Try to find the first trimmed line of search in content (trimmed)
+	firstSearchLine := strings.TrimRight(searchLines[0], " \t")
+
+	bestLine := 0
+	for i, l := range contentLines {
+		if strings.TrimRight(l, " \t") == firstSearchLine {
+			bestLine = i
+			break
+		}
+	}
+
+	// Show ~20 lines around the best match (or from top)
+	start := bestLine - 3
+	if start < 0 {
+		start = 0
+	}
+	end := start + 20
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+
+	// If no match found, show first 20 lines
+	if bestLine == 0 && len(contentLines) > 0 &&
+		strings.TrimRight(contentLines[0], " \t") != firstSearchLine {
+		start = 0
+		end = 20
+		if end > len(contentLines) {
+			end = len(contentLines)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("File excerpt (dengan nomor baris):\n")
+	for i := start; i < end; i++ {
+		marker := "  "
+		if i == bestLine && bestLine > 0 {
+			marker = "→ "
+		}
+		sb.WriteString(fmt.Sprintf("%s%4d: %s\n", marker, i+1, contentLines[i]))
+	}
+	if end < len(contentLines) {
+		sb.WriteString(fmt.Sprintf("    ... (%d total baris)\n", len(contentLines)))
+	}
+
+	// Helpful hint about whitespace
+	sb.WriteString("\nHINT: Copy-paste teks persis dari file asli. ")
+	sb.WriteString("Trailing whitespace (spasi/tab di akhir baris) sudah diabaikan saat matching. ")
+	sb.WriteString("Jika masih gagal, gunakan write_file untuk menulis ulang file.")
+
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------

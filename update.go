@@ -118,6 +118,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
 
+	case tea.PasteMsg:
+		// Handle paste in settings edit mode
+		if m.state == stateSettings && m.settingsEditMode {
+			if m.settingsSelectAll {
+				m.settingsEditBuffer = msg.Content // replace
+				m.settingsSelectAll = false
+			} else {
+				m.settingsEditBuffer += msg.Content // append
+			}
+			m.rebuildViewport()
+			return m, nil
+		}
+		// Forward to textarea in other modes
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+
 	case streamChunkMsg:
 		if m.streamStartTime.IsZero() {
 			m.streamStartTime = time.Now()
