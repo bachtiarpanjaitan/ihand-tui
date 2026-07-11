@@ -311,7 +311,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	// If both tool call AND Final Answer exist and tool call looks fake → extract Final Answer
 	if !isFinal && toolCall.name != "" && hasFinalAnswer(resp.Content) {
-		if !isValidToolCall(toolCall) || m.earlyTool.toolName == "" {
+		if !isValidToolCall(toolCall) || len(m.earlyTools) == 0 {
 			if fa := extractFinalAnswer(resp.Content); fa != "" {
 				toolCall.output = fa
 				isFinal = true
@@ -440,10 +440,23 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			if isToolAutoTrusted(m.mode, m.trustWrite, toolCall.name) {
 				var toolOutput string
 				var isToolError bool
-				if m.earlyTool.toolName == toolCall.name && m.earlyTool.input == toolCall.input {
-					toolOutput = m.earlyTool.output
-					isToolError = m.earlyTool.isError
-					m.earlyTool = earlyToolExec{} // reset
+				// Cari hasil early execution di earlyTools slice
+				var earlyOutput string
+				var earlyFound bool
+				var earlyIsErr bool
+				for i, et := range m.earlyTools {
+					if et.toolName == toolCall.name && et.input == toolCall.input {
+						earlyOutput = et.output
+						earlyIsErr = et.isError
+						earlyFound = true
+						// Remove from slice
+						m.earlyTools = append(m.earlyTools[:i], m.earlyTools[i+1:]...)
+						break
+					}
+				}
+				if earlyFound {
+					toolOutput = earlyOutput
+					isToolError = earlyIsErr
 				} else {
 					toolOutput = executeToolCall(state.activeTools, toolCall)
 					isToolError = isToolOutputError(toolOutput)
@@ -735,7 +748,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 // needsPermission returns true jika tool memerlukan konfirmasi user sebelum dieksekusi.
 func needsPermission(name string) bool {
-	switch name {
+	switch strings.ToLower(name) {
 	case "write_file", "edit_file", "read_file", "create_directory", "exec":
 		return true
 	default:
@@ -1173,7 +1186,7 @@ var knownTools = map[string]bool{
 }
 
 func isKnownTool(name string) bool {
-	return knownTools[name]
+	return knownTools[strings.ToLower(name)]
 }
 
 func cleanToolName(name string) string {
@@ -1188,7 +1201,7 @@ func cleanToolName(name string) string {
 	name = strings.TrimSuffix(name, "_")
 	name = strings.TrimPrefix(name, "`")
 	name = strings.TrimSuffix(name, "`")
-	return strings.TrimSpace(name)
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func parseReActResponse(text string) (reActTool, bool) {
@@ -1602,12 +1615,13 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 
 // isToolAutoTrusted returns true jika tool bisa langsung dieksekusi tanpa konfirmasi.
 func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
+	name := strings.ToLower(toolName)
 	// exec selalu membutuhkan konfirmasi manual dari user
-	if toolName == "exec" {
+	if name == "exec" {
 		return false
 	}
 	// Jika folder sudah dipercaya (trustWrite == true), skip konfirmasi untuk semua operasi file
-	if toolName == "write_file" || toolName == "edit_file" || toolName == "create_directory" || toolName == "read_file" {
+	if name == "write_file" || name == "edit_file" || name == "create_directory" || name == "read_file" {
 		return trustWrite
 	}
 	return false
@@ -1615,12 +1629,13 @@ func isToolAutoTrusted(mode chatMode, trustWrite bool, toolName string) bool {
 
 // isToolAutoTrustedMode returns true jika mode saat ini mengizinkan eksekusi tool langsung saat streaming.
 func isToolAutoTrustedMode(mode chatMode, trustWrite bool, toolName string) bool {
+	name := strings.ToLower(toolName)
 	// exec selalu membutuhkan konfirmasi manual dari user
-	if toolName == "exec" {
+	if name == "exec" {
 		return false
 	}
 	// Jika folder sudah dipercaya, skip konfirmasi untuk semua operasi file
-	if toolName == "write_file" || toolName == "edit_file" || toolName == "create_directory" || toolName == "read_file" {
+	if name == "write_file" || name == "edit_file" || name == "create_directory" || name == "read_file" {
 		return trustWrite
 	}
 	return false
@@ -1633,7 +1648,7 @@ func detectToolLoop(toolCalls []toolCallRecord, current reActTool) string {
 	command := extractField(current.input, `"command"`)
 	count := 0
 	for _, tc := range toolCalls {
-		if tc.toolName != current.name {
+		if !strings.EqualFold(tc.toolName, current.name) {
 			continue
 		}
 		tcPath := extractField(tc.input, `"path"`)
@@ -1643,7 +1658,7 @@ func detectToolLoop(toolCalls []toolCallRecord, current reActTool) string {
 		}
 	}
 	if count >= 3 {
-		switch current.name {
+		switch strings.ToLower(current.name) {
 		case "read_file":
 			return fmt.Sprintf("⏳ KAMU SUDAH MEMBACA file ini %d KALI. JANGAN baca lagi! "+
 				"LANGSUNG lakukan PERUBAHAN dengan write_file/edit_file SEKARANG.", count)
@@ -1660,7 +1675,7 @@ func detectToolLoop(toolCalls []toolCallRecord, current reActTool) string {
 
 // isValidToolCall validates that a tool call looks legitimate (not Final Answer text).
 func isValidToolCall(tc reActTool) bool {
-	switch tc.name {
+	switch strings.ToLower(tc.name) {
 	case "exec":
 		cmd := extractField(tc.input, `"command"`)
 		cmd = strings.TrimSpace(cmd)

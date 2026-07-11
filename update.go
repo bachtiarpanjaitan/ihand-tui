@@ -91,7 +91,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingContent = ""
 			m.activityContent = "Sedang Berpikir..."
 			m.shownToolKeys = make(map[string]bool) // reset for new stream
-			// Update existing activity indicator or create new one
+
+				m.earlyTools = nil                      // reset early-executed tools
+				m.earlyToolKeys = make(map[string]bool) // reset dedup keys
+				// Update existing activity indicator or create new one
 			found := false
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].role == "assistant" && m.messages[i].streaming {
@@ -142,66 +145,78 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recalcLayout() // sesuaikan ukuran viewport untuk task panel
 			}
 
-			// Early tool execution: eksekusi tool auto-trusted langsung saat streaming
-			if m.earlyTool.toolName == "" {
-				if toolCall, isFinal := parseReActResponse(m.streamingContent); toolCall.name != "" && !isFinal && toolCall.input != "{}" {
-					if isToolAutoTrustedMode(m.mode, m.trustWrite, toolCall.name) {
-						toolOutput := executeToolCall(msg.state.activeTools, toolCall)
-						isToolErr := strings.HasPrefix(toolOutput, "Error")
-						m.earlyTool = earlyToolExec{
-							toolName: toolCall.name,
-							input:    toolCall.input,
-							output:   toolOutput,
-							isError:  isToolErr,
-						}
-						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
-						role := "tool"
-						if isToolErr {
-							role = "tool-error"
-						}
-						m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-						// Update pending tool message if it exists (from showPendingToolCalls),
-						// otherwise replace the streaming placeholder.
-						pendingIdx := -1
-						for i := len(m.messages) - 1; i >= 0; i-- {
-							if m.messages[i].toolName == toolCall.name {
-								pendingIdx = i
-								break
-							}
-						}
-						if pendingIdx >= 0 {
-							m.messages[pendingIdx].content = display
-							m.messages[pendingIdx].role = role
-						} else {
-							// Find streaming placeholder and replace it
-							placeholderIdx := -1
-							for i := len(m.messages) - 1; i >= 0; i-- {
-								if m.messages[i].role == "assistant" && m.messages[i].streaming {
-									placeholderIdx = i
-									break
-								}
-							}
-							if placeholderIdx >= 0 {
-								m.messages[placeholderIdx] = chatMessage{
-									role:     role,
-									content:  display,
-									toolName: toolCall.name,
-									tokens:   0,
-								}
-							}
-							// Add a NEW placeholder for remaining stream content
-							m.messages = append(m.messages, chatMessage{
-								role:      "assistant",
-								content:   "",
-								timing:    0,
-								streaming: true,
-							})
-						}
-						m.refreshViewport()
+			// Early tool execution: eksekusi semua tool auto-trusted langsung saat streaming
+			allCalls := parseReActAll(m.streamingContent)
+			for _, toolCall := range allCalls {
+				if toolCall.name == "" || toolCall.input == "{}" {
+					continue
+				}
+				// Build dedup key
+				path := extractField(toolCall.input, `"path"`)
+				command := extractField(toolCall.input, `"command"`)
+				key := toolCall.name + "|" + path + "|" + command
+				if m.earlyToolKeys[key] {
+					continue
+				}
+				if !isToolAutoTrustedMode(m.mode, m.trustWrite, toolCall.name) {
+					continue // bukan auto-trusted, skip (diproses setelah stream selesai)
+				}
+				// Eksekusi tool langsung saat streaming
+				toolOutput := executeToolCall(msg.state.activeTools, toolCall)
+				isToolErr := strings.HasPrefix(toolOutput, "Error")
+				m.earlyTools = append(m.earlyTools, earlyToolExec{
+					toolName: toolCall.name,
+					input:    toolCall.input,
+					output:   toolOutput,
+					isError:  isToolErr,
+				})
+				m.earlyToolKeys[key] = true
+				display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
+				role := "tool"
+				if isToolErr {
+					role = "tool-error"
+				}
+				m.toolActivity = fmt.Sprintf("%s", toolCall.name)
+				// Update pending tool message if it exists (from showPendingToolCalls),
+				// otherwise replace the streaming placeholder.
+				pendingIdx := -1
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].toolName == toolCall.name {
+						pendingIdx = i
+						break
 					}
 				}
+				if pendingIdx >= 0 {
+					m.messages[pendingIdx].content = display
+					m.messages[pendingIdx].role = role
+				} else {
+					// Find streaming placeholder and replace it
+					placeholderIdx := -1
+					for i := len(m.messages) - 1; i >= 0; i-- {
+						if m.messages[i].role == "assistant" && m.messages[i].streaming {
+							placeholderIdx = i
+							break
+						}
+					}
+					if placeholderIdx >= 0 {
+						m.messages[placeholderIdx] = chatMessage{
+							role:     role,
+							content:  display,
+							toolName: toolCall.name,
+							tokens:   0,
+						}
+					}
+					// Add a NEW placeholder for remaining stream content
+					m.messages = append(m.messages, chatMessage{
+						role:      "assistant",
+						content:   "",
+						timing:    0,
+						streaming: true,
+					})
+				}
+				m.refreshViewport()
 			}
-			m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
+m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
 
 			// Throttle UI rendering to max ~20 FPS (50ms) to avoid lag
 			now := time.Now()

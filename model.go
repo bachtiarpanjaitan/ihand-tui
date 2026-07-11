@@ -359,7 +359,8 @@ type model struct {
 
 	// Streaming state
 	streamingContent  string        // accumulated text from stream chunks
-	earlyTool         earlyToolExec // tool yang sudah dieksekusi saat streaming
+	earlyTools        []earlyToolExec // tools yang sudah dieksekusi saat streaming (multiple)
+		earlyToolKeys     map[string]bool // dedup key → sudah dieksekusi early
 	streamStartTime   time.Time     // when the current stream started
 	lastStreamRender  time.Time     // when the stream was last rendered to UI
 	lastFinishReason  string        // API stop reason from the last chunk
