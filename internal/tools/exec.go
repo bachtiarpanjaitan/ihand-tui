@@ -27,13 +27,16 @@ func NewExecTool(allowedDir string) *ExecTool {
 func (t *ExecTool) Name() string { return "exec" }
 
 func (t *ExecTool) Description() string {
-	return "Menjalankan perintah shell/terminal di direktori project. " +
-		"Gunakan untuk: compile/run kode (go build, g++, python, dll), " +
-		"install dependencies, test, git, dan perintah shell lainnya. " +
+	return "MCP Tool: menjalankan perintah shell di WORKSPACE direktori project. " +
+		"PERINTAH SUDAH DIJALANKAN di folder project — JANGAN gunakan cd. " +
+		"Gunakan path RELATIF saja (./src, ./build, dll). " +
+		"JANGAN akses path ABSOLUTE seperti /root, /home, /etc. " +
+		"JANGAN gunakan sudo. " +
+		"Digunakan untuk: compile/run kode, install dependencies, test, git. " +
 		"Timeout 60 detik. " +
-		"Contoh: exec({\"command\": \"go build ./...\"}) " +
-		"Contoh: exec({\"command\": \"g++ -o main main.cpp && ./main\"})" +
-		"PENTING: perintah dijalankan di direktori project (allowedDir)."
+		"Contoh benar: exec({\"command\": \"go build ./...\"}) " +
+		"Contoh benar: exec({\"command\": \"g++ -o main main.cpp && ./main\"}) " +
+		"Contoh salah: exec({\"command\": \"cd /root/project && make\"}) — JANGAN pakai cd atau path absolute!"
 }
 
 func (t *ExecTool) InputSchema() *core.JSONSchema {
@@ -56,6 +59,30 @@ func (t *ExecTool) Execute(ctx context.Context, input json.RawMessage) (json.Raw
 
 	if strings.TrimSpace(params.Command) == "" {
 		return json.RawMessage(`{"error": "command tidak boleh kosong"}`), nil
+	}
+
+	// MCP-style validation: reject dangerous commands
+	cmdLower := strings.ToLower(params.Command)
+	dangerousPatterns := []string{
+		"sudo ", "sudo\t",
+		"rm -rf /", "rm -r /", "rm -rf ~",
+		"mkfs.", "dd if=",
+		"> /dev/sda", "> /dev/sdb",
+		"chmod 777 /", "chown -R",
+		"curl ", "wget ", // harus explicit allow dulu
+	}
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(cmdLower, pattern) {
+			return json.RawMessage(fmt.Sprintf(`{"error": "command tidak diizinkan (mengandung pola berbahaya: %s)"}`, pattern)), nil
+		}
+	}
+	// Reject cd to absolute paths
+	if strings.Contains(cmdLower, "cd /") || strings.Contains(cmdLower, "cd ~") ||
+		strings.Contains(cmdLower, "cd $home") || strings.Contains(cmdLower, "cd /root") ||
+		strings.Contains(cmdLower, "cd /etc") || strings.Contains(cmdLower, "cd /home") ||
+		strings.Contains(cmdLower, "cd /var") || strings.Contains(cmdLower, "cd /tmp") ||
+		strings.Contains(cmdLower, "cd /usr") || strings.Contains(cmdLower, "cd /opt") {
+		return json.RawMessage(`{"error": "JANGAN gunakan cd ke path absolute. Kamu sudah berada di direktori project. Gunakan path relatif saja."}`), nil
 	}
 
 	// Execute dengan timeout 60 detik

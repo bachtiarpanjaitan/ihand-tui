@@ -96,9 +96,9 @@ func toolActivityStyle() lipgloss.Style {
 // ---------------------------------------------------------------------------
 
 var (
-	// Tree connector characters: ⎿ and │
+	// Tree connector characters: ├── └── │
 	treeConnectorStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
+		Foreground(lipgloss.Color("245"))
 
 	// Tool name in tree header
 	treeToolNameStyle = lipgloss.NewStyle().

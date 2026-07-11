@@ -47,11 +47,11 @@ func (m *model) buildConversation() string {
 			}
 
 		case "tool", "tool-error":
-			b.WriteString(renderToolTree(msg))
-			// Only add extra newline if the NEXT message is NOT a tool call
-			// This groups consecutive tool calls together without extra spacing
+			// Determine if this is the last tool in a consecutive group
 			isNextTool := i+1 < len(m.messages) &&
 				(m.messages[i+1].role == "tool" || m.messages[i+1].role == "tool-error")
+			b.WriteString(renderToolTree(msg, !isNextTool))
+			// Add extra newline after tool call group (next message is NOT a tool call)
 			if !isNextTool {
 				b.WriteString("\n")
 			}
@@ -74,31 +74,43 @@ func (m *model) buildConversation() string {
 // Tree-view rendering for tool calls (Claude Code style)
 // ---------------------------------------------------------------------------
 
-// renderToolTree renders a single tool call as a tree node with connector lines.
+// renderToolTree renders a single tool call with tree connector lines.
 //
 // Output example:
-//   ⎿  read_file("main.go")                                  ✓ 1024 bytes
-//   │  package main
-//   │  func main() { ... }
-//   │  ... (+30 lines)
+//   ├── read_file("main.go")                                  ✓ 1024 bytes
+//   │   package main
+//   │   func main() { ... }
+//   │   ... (+30 lines)
 //
-func renderToolTree(msg chatMessage) string {
+func renderToolTree(msg chatMessage, isLast bool) string {
 	var b strings.Builder
 	isError := msg.role == "tool-error"
 
-	// --- Header line: ⎿  tool_name("path")  status ---
-	connector := treeConnectorStyle.Render("  ⎿  ")
+	// --- Header line ---
+	// ├── for intermediate tools, └── for the last in a group
+	var connector string
+	if isLast {
+		connector = treeConnectorStyle.Render("  └── ")
+	} else {
+		connector = treeConnectorStyle.Render("  ├── ")
+	}
 
 	toolDisplay := buildToolHeader(msg.toolName, msg.content, isError)
 	b.WriteString(connector)
 	b.WriteString(toolDisplay)
 	b.WriteString("\n")
 
-	// --- Content lines: │  content ---
+	// --- Content lines ---
 	contentLines := extractToolContentLines(msg.content)
 	if len(contentLines) > 0 {
 		const maxLines = 20
-		pipe := treeConnectorStyle.Render("  │  ")
+		// │ for non-last, spaces for last (nothing continues below)
+		var pipe string
+		if isLast {
+			pipe = "     " // align with └── (5 spaces)
+		} else {
+			pipe = treeConnectorStyle.Render("  │  ")
+		}
 
 		for i, line := range contentLines {
 			if i >= maxLines {

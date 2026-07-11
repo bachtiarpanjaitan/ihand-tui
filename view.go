@@ -345,21 +345,8 @@ func renderTaskPanel(m *model) string {
 		}
 	}
 
-	// Show max 5 items, prioritizing incomplete
-	const maxVisible = 5
-	var visible []taskItem
-	visible = append(visible, incomplete...)
-	if len(visible) < maxVisible {
-		remaining := maxVisible - len(visible)
-		if len(completed) > remaining {
-			completed = completed[:remaining]
-		}
-		visible = append(visible, completed...)
-	}
-	if len(visible) > maxVisible {
-		visible = visible[:maxVisible]
-	}
-	totalHidden := len(m.taskList) - len(visible)
+	// Show all tasks (no limit)
+	visible := append(incomplete, completed...)
 
 	for _, task := range visible {
 		var icon string
@@ -384,9 +371,6 @@ func renderTaskPanel(m *model) string {
 		}
 
 		desc := task.desc
-		if len(desc) > 50 {
-			desc = desc[:50] + "..."
-		}
 
 		line := fmt.Sprintf("\u2502 %s%s", iconStyle.Render(icon), desc)
 		b.WriteString(dimStyle.Render(line))
@@ -394,9 +378,10 @@ func renderTaskPanel(m *model) string {
 	}
 
 	// "+N more" jika ada task tersembunyi
-	if totalHidden > 0 {
+	if len(visible) < len(m.taskList) {
+		hidden := len(m.taskList) - len(visible)
 		moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-		line := fmt.Sprintf("\u2502 %s+%d lainnya", strings.Repeat(" ", 3), totalHidden)
+		line := fmt.Sprintf("\u2502 %s+%d lainnya", strings.Repeat(" ", 3), hidden)
 		b.WriteString(moreStyle.Render(line))
 		b.WriteString("\n")
 	}

@@ -14,7 +14,7 @@ import (
 type tickMsg time.Time
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -37,16 +37,14 @@ func formatStreamForDisplay(content string) string {
 		return "" // let trackAction handle counting
 	}
 
-	// Final Answer: return the answer text
-	if strings.Contains(content, "Final Answer:") {
-		if idx := strings.Index(content, "Final Answer:"); idx >= 0 {
-			answer := strings.TrimSpace(content[idx+13:])
-			if len(answer) > 2000 {
-				answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
-			}
-			if answer != "" {
-				return answer
-			}
+	// Final Answer: return the answer text (flexible detection)
+	if hasFinalAnswer(content) {
+		answer := extractFinalAnswer(content)
+		if len(answer) > 2000 {
+			answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
+		}
+		if answer != "" {
+			return answer
 		}
 	}
 
@@ -92,6 +90,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamStartTime = time.Now()
 			m.streamingContent = ""
 			m.activityContent = "Sedang Berpikir..."
+			m.shownToolKeys = make(map[string]bool) // reset for new stream
 			// Update existing activity indicator or create new one
 			found := false
 			for i := len(m.messages) - 1; i >= 0; i-- {
@@ -113,6 +112,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if !msg.done {
 			m.streamingContent += msg.content
+			if msg.finishReason != "" {
+				m.lastFinishReason = msg.finishReason
+			}
 			display := formatStreamForDisplay(m.streamingContent)
 			if display != "" {
 				// Final Answer text — update activity indicator, keep streaming=true
@@ -128,6 +130,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.activityContent = "Sedang Berpikir..."
 				}
+				// Show pending tool calls in the viewport immediately
+				m.showPendingToolCalls()
 			}
 			// Update estimated tokens live during streaming
 			m.totalTokens = msg.state.totalTokens + countTokens(m.streamingContent)
@@ -150,27 +154,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							output:   toolOutput,
 							isError:  isToolErr,
 						}
-						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
 						role := "tool"
 						if isToolErr {
 							role = "tool-error"
 						}
 						m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-						placeholderIdx := len(m.messages) - 1
-						// Replace the streaming placeholder with the tool result (avoids duplication)
-						m.messages[placeholderIdx] = chatMessage{
-							role:     role,
-							content:  display,
-							toolName: toolCall.name,
-							tokens:   0,
+						// Update pending tool message if it exists (from showPendingToolCalls),
+						// otherwise replace the streaming placeholder.
+						pendingIdx := -1
+						for i := len(m.messages) - 1; i >= 0; i-- {
+							if m.messages[i].toolName == toolCall.name {
+								pendingIdx = i
+								break
+							}
 						}
-						// Add a NEW placeholder for remaining stream content
-						m.messages = append(m.messages, chatMessage{
-							role:      "assistant",
-							content:   "",
-							timing:    0,
-							streaming: true,
-						})
+						if pendingIdx >= 0 {
+							m.messages[pendingIdx].content = display
+							m.messages[pendingIdx].role = role
+						} else {
+							// Find streaming placeholder and replace it
+							placeholderIdx := -1
+							for i := len(m.messages) - 1; i >= 0; i-- {
+								if m.messages[i].role == "assistant" && m.messages[i].streaming {
+									placeholderIdx = i
+									break
+								}
+							}
+							if placeholderIdx >= 0 {
+								m.messages[placeholderIdx] = chatMessage{
+									role:     role,
+									content:  display,
+									toolName: toolCall.name,
+									tokens:   0,
+								}
+							}
+							// Add a NEW placeholder for remaining stream content
+							m.messages = append(m.messages, chatMessage{
+								role:      "assistant",
+								content:   "",
+								timing:    0,
+								streaming: true,
+							})
+						}
 						m.refreshViewport()
 					}
 				}
@@ -198,12 +224,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep activity indicator alive (don't mark as done)
 		// The next stream will update its content in-place
 
-		// Dispatch to the regular ReAct handler
+		// Dispatch to the regular ReAct handler with finish reason
+		fr := m.lastFinishReason
+		m.lastFinishReason = ""
 		return m, func() tea.Msg {
 			return chatStepResultMsg{
-				state:    msg.state,
-				response: finalResp,
-				err:      nil,
+				state:        msg.state,
+				response:     finalResp,
+				err:          nil,
+				finishReason: fr,
 			}
 		}
 
@@ -717,7 +746,7 @@ func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
 		)},
 	)
 	state.iteration++
-	display := formatToolDisplay(m.pendingTool.name, m.pendingTool.input, toolOutput)
+	display := formatToolDisplay(m.pendingTool.name, m.pendingTool.input, toolOutput, m.allowedDir)
 	// Activity bar: concise summary (single line, tanpa diff)
 	path := extractField(toolOutput, `"path"`)
 	if path == "" {

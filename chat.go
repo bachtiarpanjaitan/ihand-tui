@@ -31,8 +31,30 @@ var (
 	actionRe   = regexp.MustCompile(`Action:\s*(.+)`)
 	inputRe    = regexp.MustCompile(`Action Input:\s*(.+)`)
 	finalRe    = regexp.MustCompile(`Final Answer:\s*([\s\S]*)`)
-	toolCallRe = regexp.MustCompile(`(\w+)\((\{.*?\})\)`)
+	// Flexible Final Answer patterns (LLM often uses markdown formatting)
+	finalBoldRe = regexp.MustCompile(`\*\*Final Answer:\*\*\s*([\s\S]*)`)
+	finalHdrRe  = regexp.MustCompile(`#{1,3}\s*Final Answer\s*\n([\s\S]*)`)
+	finalAnyRe  = regexp.MustCompile(`(?:Final Answer|Jawaban Akhir|Kesimpulan)[\s:]*\n?([\s\S]*)`)
+	toolCallRe  = regexp.MustCompile(`(\w+)\((\{.*?\})\)`)
 )
+
+// extractFinalAnswer tries multiple regex patterns to extract the Final Answer.
+func extractFinalAnswer(text string) string {
+	patterns := []*regexp.Regexp{finalRe, finalBoldRe, finalHdrRe, finalAnyRe}
+	for _, re := range patterns {
+		if m := re.FindStringSubmatch(text); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+	return ""
+}
+
+// hasFinalAnswer checks if the text contains any Final Answer indicator.
+func hasFinalAnswer(text string) bool {
+	return strings.Contains(text, "Final Answer") ||
+		strings.Contains(text, "Jawaban Akhir") ||
+		strings.Contains(text, "Kesimpulan")
+}
 
 // ---------------------------------------------------------------------------
 // Step-based chat loop (replaces makeToolChatCall)
@@ -40,10 +62,11 @@ var (
 
 // streamChunkMsg carries a single text token from the LLM stream.
 type streamChunkMsg struct {
-	state   chatLoopState
-	content string
-	done    bool // true when the stream is finished
-	ch      <-chan llm.Chunk
+	state        chatLoopState
+	content      string
+	done         bool   // true when the stream is finished
+	finishReason string // API stop reason: "end_turn", "tool_use", "stop", etc.
+	ch           <-chan llm.Chunk
 }
 
 // waitForStreamChunk reads the next chunk from a stream channel and returns it
@@ -55,10 +78,11 @@ func waitForStreamChunk(ch <-chan llm.Chunk, state chatLoopState) tea.Cmd {
 			return streamChunkMsg{state: state, done: true, ch: ch}
 		}
 		return streamChunkMsg{
-			state:   state,
-			content: chunk.Content,
-			done:    chunk.FinishReason != "",
-			ch:      ch,
+			state:        state,
+			content:      chunk.Content,
+			done:         chunk.FinishReason != "",
+			finishReason: chunk.FinishReason,
+			ch:           ch,
 		}
 	}
 }
@@ -92,6 +116,15 @@ func startChatLoop(ai *ihandai.Client, ctx context.Context, session, input strin
 
 		var systemPrompt string
 		systemPrompt = buildToolSystemPrompt(activeTools, mode, effort)
+
+		// MCP: beri tahu LLM workspace directory-nya
+		absDir, _ := filepath.Abs(allowedDir)
+		systemPrompt += fmt.Sprintf("\n\n--- MCP WORKSPACE CONTEXT ---\n"+
+			"Kamu bekerja di dalam workspace: %s\n"+
+			"SEMUA path di tool (read_file, write_file, exec, dll) adalah RELATIF terhadap workspace ini.\n"+
+			"JANGAN gunakan path absolute seperti /root, /home, /etc.\n"+
+			"JANGAN gunakan cd di exec command — semua command sudah berjalan di workspace.\n"+
+			"----------------------------------------\n", absDir)
 
 		// Auto-context: jika ini pesan pertama dalam sesi, sertakan struktur folder + info ekstensi
 		if len(history) <= 1 {
@@ -263,10 +296,30 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 	state.totalTokens += respTokens
 	m.totalTokens += respTokens // update UI counter live
 
+	// API-level signal: stop reason tells us what the LLM wants.
+	// "end_turn"/"stop" = final answer. "tool_use"/"tool_calls" = tool call.
+	isFinalFromAPI := msg.finishReason == "end_turn" || msg.finishReason == "stop"
+
 	toolCall, isFinal := parseReActResponse(resp.Content)
 
+	// Only trust API signal when text parsing also agrees (no tool call in text).
+	// If there's a tool call in text, process it regardless of API signal.
+	if isFinalFromAPI && toolCall.name != "" {
+		// API says final but text has tool call → continue processing the tool call
+		isFinalFromAPI = false
+	}
+
+	// If both tool call AND Final Answer exist and tool call looks fake → extract Final Answer
+	if !isFinal && toolCall.name != "" && hasFinalAnswer(resp.Content) {
+		if !isValidToolCall(toolCall) || m.earlyTool.toolName == "" {
+			if fa := extractFinalAnswer(resp.Content); fa != "" {
+				toolCall.output = fa
+				isFinal = true
+			}
+		}
+	}
+
 	// Detect multiple inline Action: calls (LLM concatenating actions on one line).
-	// Execute ALL of them so the LLM gets all expected results.
 	if !isFinal && toolCall.name != "" {
 		allActions := parseReActAll(resp.Content)
 		if len(allActions) > 1 {
@@ -274,13 +327,10 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		}
 	}
 
-	// Jika ada Action: tapi konten juga mengandung Final Answer: setelah Action terakhir,
-	// ekstrak Final Answer-nya agar ditampilkan. Tool call sudah dieksekusi via early execution.
-	if !isFinal && toolCall.name != "" && strings.Contains(resp.Content, "Final Answer:") && m.earlyTool.toolName != "" {
-		if m := finalRe.FindStringSubmatch(resp.Content); len(m) > 1 {
-			toolCall.output = strings.TrimSpace(m[1])
-			isFinal = true
-		}
+	// API says final but no tool call in text → treat content as answer directly
+	if isFinalFromAPI && toolCall.name == "" && !isFinal {
+		toolCall.output = strings.TrimSpace(resp.Content)
+		isFinal = true
 	}
 
 	// --- Final answer ---
@@ -295,14 +345,14 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					}
 				}
 			}
-			if len(incompleteDescs) > 0 && m.retryCount < maxRetries {
+			if len(incompleteDescs) > 0 && m.retryCount < 1 {
 				m.retryCount++
-				m.statusMsg = fmt.Sprintf("\u23f3 Task tersisa (%d/%d)", m.retryCount, maxRetries)
+				m.statusMsg = fmt.Sprintf("\u23f3 Task tersisa (%d/1)", m.retryCount)
 				taskList := strings.Join(incompleteDescs, "\n  - ")
 				reminder := "PERINGATAN: Masih ada task yang BELUM selesai:\n" +
 					"  - " + taskList + "\n\n" +
-					"Selesaikan SEMUA task menggunakan write_file() atau edit_file() " +
-					"sebelum memberikan Final Answer."
+					"Selesaikan ATAU hapus task yang tidak relevan. " +
+					"Jangan stuck \u2014 jika tidak bisa diselesaikan, berikan Final Answer."
 				state.messages = append(state.messages,
 					core.Message{Role: "assistant", Content: resp.Content},
 					core.Message{Role: "user", Content: reminder},
@@ -368,6 +418,22 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 
 	// --- Tool call ---
 	if toolCall.name != "" {
+		// Validate: reject tool calls that look like Final Answer text
+		if !isValidToolCall(toolCall) {
+			// Skip broken tool call, continue to next iteration
+			state.messages = append(state.messages,
+				core.Message{Role: "assistant", Content: resp.Content},
+				core.Message{Role: "user", Content: fmt.Sprintf(
+					"ERROR: Tool call %s tidak valid. Jangan gunakan Action: untuk jawaban akhir — tulis jawaban langsung.", toolCall.name,
+				)},
+			)
+			state.iteration++
+			m.rebuildViewport()
+			return tea.Batch(
+				m.textarea.Focus(),
+				continueChatLoop(m.ai, m.ctx, state),
+			), false
+		}
 		// Cek apakah tool butuh permission
 		if needsPermission(toolCall.name) {
 			// Jika user sudah trust write, skip konfirmasi
@@ -381,18 +447,31 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 				} else {
 					toolOutput = executeToolCall(state.activeTools, toolCall)
 					isToolError = isToolOutputError(toolOutput)
-					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+					display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
 					role := "tool"
 					if isToolError {
 						role = "tool-error"
 					}
 					m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-					m.messages = append(m.messages, chatMessage{
-						role:     role,
-						content:  display,
-						toolName: toolCall.name,
-						tokens:   0,
-					})
+					// Update pending message if exists, otherwise append
+					pendingIdx := -1
+					for i := len(m.messages) - 1; i >= 0; i-- {
+						if m.messages[i].toolName == toolCall.name {
+							pendingIdx = i
+							break
+						}
+					}
+					if pendingIdx >= 0 {
+						m.messages[pendingIdx].content = display
+						m.messages[pendingIdx].role = role
+					} else {
+						m.messages = append(m.messages, chatMessage{
+							role:     role,
+							content:  display,
+							toolName: toolCall.name,
+							tokens:   0,
+						})
+					}
 				}
 				state.toolCalls = append(state.toolCalls, toolCallRecord{
 					toolName: toolCall.name,
@@ -407,6 +486,13 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					)},
 				)
 				state.iteration++
+
+				// Track consecutive failures — max 1 retry for failed tools
+				if isToolError {
+					state.consecutiveFails++
+				} else {
+					state.consecutiveFails = 0
+				}
 
 				// Max iteration check — prevents fall-through to second execution
 				if state.iteration >= maxIterations {
@@ -446,6 +532,29 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 					return m.textarea.Focus(), true
 				}
 
+				// Detect LLM loop: same tool called 3+ times without progress
+				loopMsg := detectToolLoop(state.toolCalls, toolCall)
+				if loopMsg != "" {
+					state.messages = append(state.messages,
+						core.Message{Role: "user", Content: loopMsg},
+					)
+				}
+
+				// Stop if too many consecutive tool failures (max 1 retry)
+				if state.consecutiveFails >= 2 {
+					finalContent := fmt.Sprintf("! Tool %s gagal %d kali berturut-turut. Menghentikan proses.", toolCall.name, state.consecutiveFails)
+					m.messages = append(m.messages, chatMessage{
+						role:    "error",
+						content: finalContent,
+					})
+					m.state = stateReady
+					m.totalTokens += state.totalTokens
+					m.toolActivity = "✗ Gagal"
+					m.rebuildViewport()
+					m.statusMsg = ""
+					return m.textarea.Focus(), true
+				}
+
 				// Continue the ReAct loop — return early to prevent double execution
 				m.rebuildViewport()
 				return tea.Batch(
@@ -470,20 +579,33 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 		isToolError := isToolOutputError(toolOutput)
 
 		// Show tool call in both activity bar + conversation
-		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
+		display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
 		role := "tool"
 		if isToolError {
 			role = "tool-error"
 		}
 		// Activity bar shows latest tool (above input) - concise single line
 		m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-		// Conversation keeps full history
-		m.messages = append(m.messages, chatMessage{
-			role:     role,
-			content:  display,
-			toolName: toolCall.name,
-			tokens:   0,
-		})
+		// Update pending tool message if it exists (from showPendingToolCalls),
+		// otherwise append a new one.
+		pendingIdx := -1
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if m.messages[i].toolName == toolCall.name {
+				pendingIdx = i
+				break
+			}
+		}
+		if pendingIdx >= 0 {
+			m.messages[pendingIdx].content = display
+			m.messages[pendingIdx].role = role
+		} else {
+			m.messages = append(m.messages, chatMessage{
+				role:     role,
+				content:  display,
+				toolName: toolCall.name,
+				tokens:   0,
+			})
+		}
 
 		state.toolCalls = append(state.toolCalls, toolCallRecord{
 			toolName: toolCall.name,
@@ -500,6 +622,13 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			)},
 		)
 		state.iteration++
+
+		// Track consecutive failures — max 1 retry for failed tools
+		if isToolError {
+			state.consecutiveFails++
+		} else {
+			state.consecutiveFails = 0
+		}
 
 		// Check max iterations
 		if state.iteration >= maxIterations {
@@ -526,6 +655,29 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			return m.textarea.Focus(), true
 		}
 
+		// Detect LLM loop: same tool called 3+ times without progress
+		loopMsg := detectToolLoop(state.toolCalls, toolCall)
+		if loopMsg != "" {
+			state.messages = append(state.messages,
+				core.Message{Role: "user", Content: loopMsg},
+			)
+		}
+
+		// Stop if too many consecutive tool failures (max 1 retry)
+		if state.consecutiveFails >= 2 {
+			finalContent := fmt.Sprintf("! Tool gagal %d kali berturut-turut. Menghentikan proses.", state.consecutiveFails)
+			m.messages = append(m.messages, chatMessage{
+				role:    "error",
+				content: finalContent,
+			})
+			m.state = stateReady
+			m.totalTokens += state.totalTokens
+			m.toolActivity = "✗ Gagal"
+			m.rebuildViewport()
+			m.statusMsg = ""
+			return m.textarea.Focus(), true
+		}
+
 		// Update UI and continue loop
 		m.rebuildViewport()
 		return tea.Batch(
@@ -545,7 +697,7 @@ func processChatStep(m *model, msg chatStepResultMsg) (tea.Cmd, bool) {
 			"Contoh:\n" +
 			"  Action: read_file({\"path\": \"file.go\"})\n" +
 			"  Action: write_file({\"path\": \"file.go\", \"content\": \"...\"})\n" +
-			"Setelah semua tool selesai, berikan Final Answer."
+			"Setelah semua tool selesai, berikan jawaban."
 		state.messages = append(state.messages,
 			core.Message{Role: "assistant", Content: resp.Content},
 			core.Message{Role: "user", Content: reminder},
@@ -626,7 +778,7 @@ func isToolOutputError(output string) bool {
 
 // formatToolDisplay returns a user-friendly display string for a tool call result.
 // Uses simple string extraction to avoid issues with imperfect JSON from tool output.
-func formatToolDisplay(toolName, input, output string) string {
+func formatToolDisplay(toolName, input, output, allowedDir string) string {
 	path := extractField(output, `"path"`)
 	if path == "" {
 		path = extractField(output, `"path\":`)
@@ -634,6 +786,13 @@ func formatToolDisplay(toolName, input, output string) string {
 	// Fallback: extract path from input params if output lacks it
 	if path == "" {
 		path = extractField(input, `"path"`)
+	}
+	// Resolve relative path to absolute for display (MCP: user needs to see full path)
+	if path != "" && !filepath.IsAbs(path) {
+		resolved := filepath.Join(allowedDir, path)
+		if absPath, err := filepath.Abs(resolved); err == nil {
+			path = absPath
+		}
 	}
 
 	// Check for error
@@ -691,6 +850,31 @@ func formatToolDisplay(toolName, input, output string) string {
 		fmt.Sscanf(countStr, "%d", &count)
 		return fmt.Sprintf("Pencarian teks — %d hasil", count)
 	case "read_file_lines":
+		var result struct {
+			Path      string `json:"path"`
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
+			Lines     []struct {
+				Number  int    `json:"number"`
+				Content string `json:"content"`
+			} `json:"lines"`
+		}
+		if err := json.Unmarshal([]byte(output), &result); err == nil && result.Path != "" {
+			if len(result.Lines) > 0 {
+				var b strings.Builder
+				const maxLines = 20
+				for i, l := range result.Lines {
+					if i >= maxLines {
+						b.WriteString(fmt.Sprintf("... (+%d baris)\n", len(result.Lines)-maxLines))
+						break
+					}
+					b.WriteString(fmt.Sprintf("%4d  %s\n", l.Number, l.Content))
+				}
+				return fmt.Sprintf("%s: baris %d-%d\n%s", result.Path, result.StartLine, result.EndLine, strings.TrimRight(b.String(), "\n"))
+			}
+			return fmt.Sprintf("%s: baris %d-%d", result.Path, result.StartLine, result.EndLine)
+		}
+		// Fallback
 		path := extractField(output, `"path"`)
 		startLine := extractField(output, `"start_line"`)
 		endLine := extractField(output, `"end_line"`)
@@ -713,10 +897,21 @@ func formatToolDisplay(toolName, input, output string) string {
 			content := extractJSONStringField(output, "content")
 			if content != "" {
 				const maxContentLen = 2000
+				lineCount := strings.Count(content, "\n") + 1
+				truncated := false
 				if len(content) > maxContentLen {
-					content = content[:maxContentLen] + "\n... (file terpotong)"
+					content = content[:maxContentLen]
+					truncated = true
 				}
-				return fmt.Sprintf("%s — Dibaca (%d bytes)\n%s", path, size, content)
+				displayLines := strings.Count(content, "\n") + 1
+				meta := fmt.Sprintf("%d bytes, %d baris", size, lineCount)
+				if truncated {
+					meta += fmt.Sprintf(" (menampilkan %d baris)", displayLines)
+				}
+				if truncated {
+					content = content + "\n... (file terpotong)"
+				}
+				return fmt.Sprintf("%s — Dibaca (%s)\n%s", path, meta, content)
 			}
 			return fmt.Sprintf("%s — Dibaca (%d bytes)", path, size)
 		}
@@ -998,7 +1193,7 @@ func cleanToolName(name string) string {
 
 func parseReActResponse(text string) (reActTool, bool) {
 	tool, hasTool := parseReActSingle(text)
-	hasFinal := strings.Contains(text, "Final Answer:")
+	hasFinal := hasFinalAnswer(text)
 
 	// If both tool call and Final Answer present, prioritize tool call.
 	// The Final Answer will be captured after tool execution.
@@ -1008,9 +1203,7 @@ func parseReActResponse(text string) (reActTool, bool) {
 
 	// Final Answer only — extract content for display
 	if hasFinal {
-		if m := finalRe.FindStringSubmatch(text); len(m) > 1 {
-			tool.output = strings.TrimSpace(m[1])
-		}
+		tool.output = extractFinalAnswer(text)
 		return tool, true
 	}
 
@@ -1190,7 +1383,7 @@ func executeAllToolCalls(m *model, state chatLoopState, resp *core.Response, too
 		if r.name == "" {
 			continue
 		}
-		display := formatToolDisplay(r.name, r.input, r.output)
+		display := formatToolDisplay(r.name, r.input, r.output, m.allowedDir)
 		role := "tool"
 		if r.isError {
 			role = "tool-error"
@@ -1290,70 +1483,69 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("- ANALISIS kode yang ada\n")
 		b.WriteString("- BUAT rencana langkah-demi-langkah yang terstruktur\n")
 		b.WriteString("- JANGAN menulis atau mengubah file apapun\n")
-		b.WriteString("- JANGAN mengklaim sudah menulis file — kamu tidak bisa write di mode ini\n")
-		b.WriteString("- Akhiri dengan Final Answer: berisi rencana yang jelas\n\n")
+		b.WriteString("- Berikan jawaban langsung ketika selesai — API akan mengakhiri turn secara otomatis\n\n")
 
 	case modeEdit:
 		b.WriteString("Kamu adalah AI asisten dalam MODE EDIT.\n")
 		b.WriteString("Tugasmu adalah mengimplementasikan perubahan secara LANGSUNG.\n")
 		b.WriteString("Jangan bertanya — langsung kerjakan.\n\n")
-		b.WriteString("!!! INSTRUKSI WAJIB – BACA DENGAN SEKSAMA !!!\n")
-		b.WriteString("Kamu HARUS menggunakan Action: format untuk SETIAP tool call.\n")
-		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
-		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
-		b.WriteString("\nLangkah:\n")
-		b.WriteString("1. BUAT PLAN GENERAL: kelompokkan file terkait jadi 1 task besar\n")
-		b.WriteString("2. KERJAKAN: SATU task mencakup BANYAK write_file()\n")
-		b.WriteString("3. UPDATE: centang [x] task SETELAH semua file di dalamnya selesai\n")
-		b.WriteString("4. REVIEW: exec() untuk build/check\n")
-		b.WriteString("5. Final Answer hanya jika SEMUA task selesai\n\n")
-		b.WriteString("\nContoh task GENERAL (bukan per file):\n")
+		b.WriteString("!!! FORMAT TOOL CALL — WAJIB !!!\n")
+		b.WriteString("Untuk memanggil tool, GUNAKAN format:\n")
+		b.WriteString("  Action: nama_tool({\"key\": \"value\"})\n\n")
+		b.WriteString("Jika tugas MEMBUTUHKAN perubahan file, panggil write_file/edit_file.\n")
+		b.WriteString("Jika tugas HANYA membaca/menganalisis, langsung berikan jawaban.\n")
+		b.WriteString("JANGAN gunakan Action: untuk jawaban akhir.\n")
+		b.WriteString("Jawaban akhir TIDAK PERLU format khusus — tulis saja langsung.\n\n")
+		b.WriteString("Langkah:\n")
+		b.WriteString("1. BACA file yang relevan (maksimal 3 file)\n")
+		b.WriteString("2. BUAT PLAN: 1-3 task saja, jangan berlebihan\n")
+		b.WriteString("3. KERJAKAN: tulis SEMUA file dalam 1-2 iterasi\n")
+		b.WriteString("4. JIKA PERLU: exec() untuk verifikasi (cukup 1 kali)\n")
+		b.WriteString("5. Berikan jawaban setelah perubahan selesai\n")
+		b.WriteString("MAKSIMAL 5 iterasi total. JANGAN ulangi tool yang sama berkali-kali.\n\n")
+		b.WriteString("Contoh task GENERAL (bukan per file):\n")
 		b.WriteString("  - [ ] Setup struktur project (package.json, vite.config, index.html)\n")
 		b.WriteString("    Action: write_file({\"path\": \"package.json\", \"content\": \"...\"})\n")
 		b.WriteString("    Action: write_file({\"path\": \"vite.config.js\", \"content\": \"...\"})\n")
 		b.WriteString("    Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
 		b.WriteString("  - [x] Setup struktur project\n")
-		b.WriteString("  - [ ] Implementasi komponen UI (Navbar, Hero, Footer)\n")
-		b.WriteString("    Action: write_file({\"path\": \"src/Navbar.vue\", \"content\": \"...\"})\n")
-		b.WriteString("    Action: write_file({\"path\": \"src/Hero.vue\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Implementasi komponen UI\n")
 		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
-		b.WriteString("  Final Answer: Semua task selesai.\n\n")
+		b.WriteString("  Semua task selesai — project siap digunakan.\n\n")
 		b.WriteString("ATURAN:\n")
 		b.WriteString("- 1 task GENERAL = banyak file terkait\n")
 		b.WriteString("- Centang [x] SETELAH semua file dalam task selesai\n")
 		b.WriteString("- Jangan buat task per-file, buat task per-fitur\n")
-		b.WriteString("- Final Answer hanya jika SEMUA task tercentang\n\n")
+		b.WriteString("- JANGAN tulis \"Final Answer:\" — API akan mengakhiri turn otomatis\n\n")
 	case modeAuto:
 		b.WriteString("Kamu adalah AI asisten dalam MODE OTONOM.\n")
-		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user.\n")
-		b.WriteString("!!! INSTRUKSI WAJIB – BACA DENGAN SEKSAMA !!!\n")
-		b.WriteString("Kamu HARUS menggunakan Action: format untuk SETIAP tool call.\n")
-		b.WriteString("JANGAN PERNAH memberikan Final Answer tanpa memanggil write_file.\n")
-		b.WriteString("\nWAJIB: Buat PLAN checklist sebelum eksekusi!\n")
-		b.WriteString("\nLangkah:\n")
-		b.WriteString("1. BUAT PLAN GENERAL: kelompokkan file terkait jadi 1 task\n")
-		b.WriteString("2. KERJAKAN: SATU task = BANYAK write_file()\n")
-		b.WriteString("3. CENTANG [x] task SETELAH semua file di dalamnya selesai\n")
-		b.WriteString("4. REVIEW: exec() untuk build/check\n")
-		b.WriteString("5. Final Answer hanya jika SEMUA task selesai\n\n")
-		b.WriteString("\nContoh task GENERAL:\n")
+		b.WriteString("Kerjakan tugas sampai SELESAI tanpa perlu konfirmasi user.\n\n")
+		b.WriteString("!!! FORMAT TOOL CALL — WAJIB !!!\n")
+		b.WriteString("Untuk memanggil tool, GUNAKAN format:\n")
+		b.WriteString("  Action: nama_tool({\"key\": \"value\"})\n\n")
+		b.WriteString("Jika tugas MEMBUTUHKAN perubahan file, panggil write_file/edit_file.\n")
+		b.WriteString("Jika tugas HANYA membaca/menganalisis, langsung berikan jawaban.\n")
+		b.WriteString("JANGAN gunakan Action: untuk jawaban akhir.\n")
+		b.WriteString("Jawaban akhir TIDAK PERLU format khusus — tulis saja langsung.\n\n")
+		b.WriteString("Langkah:\n")
+		b.WriteString("1. BACA file yang relevan (maksimal 3 file)\n")
+		b.WriteString("2. BUAT PLAN: 1-3 task saja\n")
+		b.WriteString("3. KERJAKAN: tulis SEMUA file dalam 1-2 iterasi\n")
+		b.WriteString("4. JIKA PERLU: exec() untuk verifikasi (cukup 1 kali)\n")
+		b.WriteString("5. Berikan jawaban setelah perubahan selesai\n")
+		b.WriteString("MAKSIMAL 5 iterasi total. JANGAN ulangi tool yang sama berkali-kali.\n\n")
+		b.WriteString("Contoh task GENERAL:\n")
 		b.WriteString("  - [ ] Setup project (package.json, vite.config, index.html)\n")
 		b.WriteString("    Action: write_file({\"path\": \"package.json\", \"content\": \"...\"})\n")
 		b.WriteString("    Action: write_file({\"path\": \"vite.config.js\", \"content\": \"...\"})\n")
 		b.WriteString("    Action: write_file({\"path\": \"index.html\", \"content\": \"...\"})\n")
 		b.WriteString("  - [x] Setup project\n")
-		b.WriteString("  - [ ] Buat komponen utama (Navbar.vue, Hero.vue, Footer.vue)\n")
-		b.WriteString("    Action: write_file({\"path\": \"src/Navbar.vue\", \"content\": \"...\"})\n")
-		b.WriteString("    Action: write_file({\"path\": \"src/Hero.vue\", \"content\": \"...\"})\n")
-		b.WriteString("  - [x] Buat komponen utama\n")
 		b.WriteString("  Action: exec({\"command\": \"npm run build\"})\n")
-		b.WriteString("  Final Answer: Semua task selesai.\n\n")
+		b.WriteString("  Semua task selesai — project siap digunakan.\n\n")
 		b.WriteString("ATURAN:\n")
 		b.WriteString("- 1 task GENERAL = banyak file dalam 1 fitur\n")
 		b.WriteString("- Centang [x] SETELAH semua file dalam task selesai\n")
 		b.WriteString("- Jangan buat task per-file\n")
-		b.WriteString("- Final Answer hanya jika SEMUA task tercentang\n\n")
+		b.WriteString("- JANGAN tulis \"Final Answer:\" — API akan mengakhiri turn otomatis\n\n")
 	default:
 		b.WriteString("Kamu adalah AI asisten dalam MODE CHAT (percakapan normal). ")
 		b.WriteString("Bantu jawab pertanyaan, analisis kode, dan diskusi.\n\n")
@@ -1380,11 +1572,10 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 	}
 
 	if len(toolList) > 0 {
-		b.WriteString("FORMAT MEMANGGIL TOOLS:\n")
-		b.WriteString("Action: nama_tool({\"key\": \"value\"})\n\n")
-		b.WriteString("FORMAT JAWABAN AKHIR:\n")
-		b.WriteString("Final Answer: jawaban dalam Bahasa Indonesia\n\n")
-		b.WriteString("Jangan gunakan format lain untuk memanggil tools.\n\n")
+		b.WriteString("FORMAT TOOL CALL:\n")
+		b.WriteString("  Action: nama_tool({\"key\": \"value\"})\n\n")
+		b.WriteString("Jawaban akhir TIDAK PERLU format khusus — tulis langsung.\n")
+		b.WriteString("JANGAN gunakan \"Final Answer:\" — API otomatis mendeteksi akhir respons.\n\n")
 		b.WriteString("Tools yang tersedia:\n")
 
 		for _, t := range toolList {
@@ -1392,7 +1583,7 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 			b.WriteString(fmt.Sprintf("- %s: %s\n  Schema: %s\n\n", t.Name(), t.Description(), string(schema)))
 		}
 	} else {
-		b.WriteString("Tidak ada tools yang tersedia. Jawab langsung dengan Final Answer.\n\n")
+		b.WriteString("Tidak ada tools yang tersedia. Jawab langsung.\n\n")
 	}
 
 	// Mode Edit/Auto: ingatkan checklist di akhir (paling dekat dengan respon LLM)
@@ -1401,10 +1592,11 @@ func buildToolSystemPrompt(toolList []tools.Tool, mode chatMode, effort effortLe
 		b.WriteString("  - [ ] Deskripsi task general (mencakup banyak file)\n")
 		b.WriteString("  - [ ] Task berikutnya\n")
 		b.WriteString("Centang [x] SETELAH semua file dalam task selesai ditulis.\n")
-		b.WriteString("Jangan memberikan Final Answer sebelum SEMUA task tercentang.\n\n")
+		b.WriteString("Setelah SEMUA task tercentang, berikan jawaban.\n\n")
 	}
 
-	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia untuk Final Answer.")
+	b.WriteString("PENTING: Selalu gunakan Bahasa Indonesia dalam jawaban.\n")
+	b.WriteString("JANGAN tulis \"Final Answer:\" — cukup tulis jawabannya langsung.")
 	return b.String()
 }
 
@@ -1432,6 +1624,67 @@ func isToolAutoTrustedMode(mode chatMode, trustWrite bool, toolName string) bool
 		return trustWrite
 	}
 	return false
+}
+
+// detectToolLoop checks if the LLM is stuck calling the same tool repeatedly.
+// Returns a warning message for the LLM if the same tool+input has been used 3+ times.
+func detectToolLoop(toolCalls []toolCallRecord, current reActTool) string {
+	path := extractField(current.input, `"path"`)
+	command := extractField(current.input, `"command"`)
+	count := 0
+	for _, tc := range toolCalls {
+		if tc.toolName != current.name {
+			continue
+		}
+		tcPath := extractField(tc.input, `"path"`)
+		tcCmd := extractField(tc.input, `"command"`)
+		if (path != "" && tcPath == path) || (command != "" && tcCmd == command) {
+			count++
+		}
+	}
+	if count >= 3 {
+		switch current.name {
+		case "read_file":
+			return fmt.Sprintf("⏳ KAMU SUDAH MEMBACA file ini %d KALI. JANGAN baca lagi! "+
+				"LANGSUNG lakukan PERUBAHAN dengan write_file/edit_file SEKARANG.", count)
+		case "exec":
+			return fmt.Sprintf("⏳ KAMU SUDAH MENJALANKAN command ini %d KALI. "+
+				"JANGAN ulangi! Jika gagal, coba pendekatan LAIN atau laporkan error.", count)
+		default:
+			return fmt.Sprintf("⏳ KAMU SUDAH MEMANGGIL %s %d KALI. "+
+				"JANGAN ulangi! Ambil tindakan atau berikan jawaban.", current.name, count)
+		}
+	}
+	return ""
+}
+
+// isValidToolCall validates that a tool call looks legitimate (not Final Answer text).
+func isValidToolCall(tc reActTool) bool {
+	switch tc.name {
+	case "exec":
+		cmd := extractField(tc.input, `"command"`)
+		cmd = strings.TrimSpace(cmd)
+		if cmd == "" || len(cmd) > 200 ||
+			strings.HasPrefix(cmd, "**") || strings.HasPrefix(cmd, "✅") ||
+			strings.HasPrefix(cmd, "- ") || strings.HasPrefix(cmd, "* ") ||
+			strings.Contains(cmd, "telah menyelesaikan") ||
+			strings.Contains(cmd, "task sudah selesai") ||
+			strings.Contains(cmd, "tidak ada lagi") {
+			return false
+		}
+	case "read_file", "write_file", "edit_file", "read_file_lines":
+		path := extractField(tc.input, `"path"`)
+		path = strings.TrimSpace(path)
+		if path == "" || len(path) > 200 ||
+			strings.HasPrefix(path, "✅") || strings.HasPrefix(path, "**") ||
+			strings.Contains(path, "task") || strings.Contains(path, "TASK") ||
+			strings.Contains(path, "sudah selesai") ||
+			strings.Contains(path, "telah menyelesaikan") ||
+			strings.Count(path, " ") > 5 {
+			return false
+		}
+	}
+	return true
 }
 
 // parseTaskList extracts checklist items from LLM streaming content.

@@ -211,20 +211,22 @@ type toolCallMsg struct {
 
 // chatLoopState carries the ReAct loop state across async LLM calls.
 type chatLoopState struct {
-	session         string
-	messages        []core.Message
-	activeTools     []tools.Tool
-	iteration       int
-	toolCalls       []toolCallRecord
-	totalTokens     int
-	startTime       time.Time
+	session          string
+	messages         []core.Message
+	activeTools      []tools.Tool
+	iteration        int
+	toolCalls        []toolCallRecord
+	totalTokens      int
+	startTime        time.Time
+	consecutiveFails int // jumlah tool gagal berturut-turut (max 1 retry)
 }
 
 // chatStepResultMsg is returned by each async LLM call step.
 type chatStepResultMsg struct {
-	state    chatLoopState
-	response *core.Response
-	err      error
+	state        chatLoopState
+	response     *core.Response
+	err          error
+	finishReason string // API stop reason: "end_turn", "tool_use", "stop", etc.
 }
 
 type slashCommand struct {
@@ -356,10 +358,12 @@ type model struct {
 	taskUpdated bool       // true jika taskList berubah
 
 	// Streaming state
-	streamingContent string        // accumulated text from stream chunks
-	earlyTool        earlyToolExec // tool yang sudah dieksekusi saat streaming
-	streamStartTime  time.Time     // when the current stream started
-	lastStreamRender time.Time     // when the stream was last rendered to UI
+	streamingContent  string        // accumulated text from stream chunks
+	earlyTool         earlyToolExec // tool yang sudah dieksekusi saat streaming
+	streamStartTime   time.Time     // when the current stream started
+	lastStreamRender  time.Time     // when the stream was last rendered to UI
+	lastFinishReason  string        // API stop reason from the last chunk
+	shownToolKeys     map[string]bool // tool calls already shown during this stream (key = name+input)
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
