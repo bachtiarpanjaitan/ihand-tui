@@ -92,9 +92,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activityContent = "Sedang Berpikir..."
 			m.shownToolKeys = make(map[string]bool) // reset for new stream
 
-				m.earlyTools = nil                      // reset early-executed tools
-				m.earlyToolKeys = make(map[string]bool) // reset dedup keys
-				// Update existing activity indicator or create new one
+			m.earlyTools = nil                      // reset early-executed tools
+			m.earlyToolKeys = make(map[string]bool) // reset dedup keys
+			// Update existing activity indicator or create new one
 			found := false
 			for i := len(m.messages) - 1; i >= 0; i-- {
 				if m.messages[i].role == "assistant" && m.messages[i].streaming {
@@ -216,7 +216,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.refreshViewport()
 			}
-m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
+			m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
 
 			// Throttle UI rendering to max ~20 FPS (50ms) to avoid lag
 			now := time.Now()
@@ -401,7 +401,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+s":
-			return m, copyConversation(&m)
+		return m, copyConversation(&m)
 
 	case "shift+enter", "ctrl+j":
 		if m.state == stateThinking {
@@ -812,14 +812,4 @@ func (m model) handleConfirmDeny() (tea.Model, tea.Cmd) {
 		continueChatLoop(m.ai, m.ctx, state),
 		tickCmd(),
 	)
-}
-
-func extractSpinnerPrefix(s string) string {
-	spinners := []string{"\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2823", "\u280f"}
-	for _, sp := range spinners {
-		if strings.HasPrefix(s, sp+" ") {
-			return sp
-		}
-	}
-	return ""
 }

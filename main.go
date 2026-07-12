@@ -13,8 +13,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	_ "github.com/bachtiarpanjaitan/ihandai-go/plugins/ollama"
 	_ "github.com/bachtiarpanjaitan/ihand-tui/internal/providers"
+	_ "github.com/bachtiarpanjaitan/ihandai-go/plugins/ollama"
 )
 
 var version = "dev" // set via ldflags: -X main.version=1.0.0
@@ -123,12 +123,12 @@ func main() {
 		ihandai.WithMemory(store),
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ Gagal konek ke LLM %q: %v\n", activeCfg.Schema, err)
+		fmt.Fprintf(os.Stderr, "Gagal konek ke LLM %q: %v\n", activeCfg.Schema, err)
 		os.Exit(1)
 	}
 	defer ai.Close()
 
-	fmt.Fprintf(os.Stderr, "✓ Terhubung ke %s/%s\n", activeCfg.Schema, activeCfg.Model)
+	fmt.Fprintf(os.Stderr, "Terhubung ke %s/%s\n", activeCfg.Schema, activeCfg.Model)
 
 	m := initModel(ai, store, activeCfg.Schema, activeCfg.Model, cfg.App.Session, allowedDir, *configPath)
 
