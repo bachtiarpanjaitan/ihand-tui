@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bachtiarpanjaitan/ihandai-go"
 	"github.com/bachtiarpanjaitan/ihandai-go/pkg/llm"
@@ -40,7 +41,7 @@ func (m model) saveSettings() (tea.Model, tea.Cmd) {
 
 	// Update runtime values from the saved config
 	activeCfg := cfg.ActiveConfig()
-	m.provider = activeCfg.Provider
+	m.provider = activeCfg.Schema
 	m.modelName = activeCfg.Model
 	m.currentProfile = cfg.ActiveProfile
 	m.session = cfg.App.Session
@@ -109,11 +110,11 @@ func (m *model) switchProfile(profileIdx int) error {
 	}
 
 	newAI, err := ihandai.New(
-		ihandai.WithLLM(profile.Provider, llmOpts...),
+		ihandai.WithLLM(profile.Schema, llmOpts...),
 		ihandai.WithMemory(m.memory),
 	)
 	if err != nil {
-		return fmt.Errorf("gagal konek ke %s/%s: %w", profile.Provider, profile.Model, err)
+		return fmt.Errorf("gagal konek ke %s/%s: %w", profile.Schema, profile.Model, err)
 	}
 
 	// Close old client
@@ -137,7 +138,7 @@ func (m *model) switchProfile(profileIdx int) error {
 	// Update state
 	cfg.ActiveProfile = profileIdx
 	m.currentProfile = profileIdx
-	m.provider = profile.Provider
+	m.provider = profile.Schema
 	m.modelName = profile.Model
 
 	return nil
@@ -160,9 +161,11 @@ func handleSettingsKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// If in edit mode, handle editing keys
 	if m.settingsEditMode {
-		switch msg.String() {
+		keystroke := msg.String()
+		switch keystroke {
 		case "enter":
 			// Confirm edit — apply buffer value to config
+			m.settingsSelectAll = false
 			applySettingsFieldValue(&m, m.settingsCurrentField, m.settingsEditBuffer)
 			m.settingsEditMode = false
 			m.settingsEditBuffer = ""
@@ -171,26 +174,67 @@ func handleSettingsKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		case "esc":
 			// Cancel editing
+			m.settingsSelectAll = false
 			m.settingsEditMode = false
 			m.settingsEditBuffer = ""
 			m.rebuildViewport()
 			return m, nil
 
 		case "backspace", "ctrl+h":
-			if len(m.settingsEditBuffer) > 0 {
+			if m.settingsSelectAll {
+				// Select-all active: clear entire buffer
+				m.settingsEditBuffer = ""
+				m.settingsSelectAll = false
+			} else if len(m.settingsEditBuffer) > 0 {
 				m.settingsEditBuffer = m.settingsEditBuffer[:len(m.settingsEditBuffer)-1]
-				m.rebuildViewport()
 			}
+			m.rebuildViewport()
+			return m, nil
+
+		case "delete", "ctrl+d":
+			// Forward delete — not supported without cursor position tracking
+			m.settingsSelectAll = false
 			return m, nil
 
 		case "ctrl+u":
+			m.settingsSelectAll = false
 			m.settingsEditBuffer = ""
 			m.rebuildViewport()
 			return m, nil
 
+		case "ctrl+w":
+			m.settingsSelectAll = false
+			// Delete last word
+			buf := m.settingsEditBuffer
+			// Trim trailing spaces
+			buf = strings.TrimRight(buf, " \t")
+			if idx := strings.LastIndexAny(buf, " \t"); idx >= 0 {
+				m.settingsEditBuffer = buf[:idx+1]
+			} else {
+				m.settingsEditBuffer = ""
+			}
+			m.rebuildViewport()
+			return m, nil
+
+		case "ctrl+a", "super+a":
+			// Select all (Cmd+A on macOS, Ctrl+A on other systems)
+			if len(m.settingsEditBuffer) > 0 {
+				m.settingsSelectAll = !m.settingsSelectAll // toggle
+			}
+			m.rebuildViewport()
+			return m, nil
+
 		default:
-			if len(msg.String()) == 1 && msg.String()[0] >= 32 {
-				m.settingsEditBuffer += msg.String()
+			// Use Key().Text for printable characters (handles space, unicode, etc.)
+			text := msg.Key().Text
+			if text != "" {
+				if m.settingsSelectAll {
+					// Replace entire buffer with typed character
+					m.settingsEditBuffer = text
+					m.settingsSelectAll = false
+				} else {
+					m.settingsEditBuffer += text
+				}
 				m.rebuildViewport()
 			}
 			return m, nil
@@ -252,10 +296,12 @@ func handleSettingsKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // handleProfileListKey handles key presses in the profile list sub-view.
 func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	profiles := m.settingsConfig.Profiles
+	// Total options = profiles + 1 (Add New Profile)
+	totalOpts := len(profiles) + 1
+
 	if len(profiles) == 0 {
-		m.settingsShowProfileList = false
-		m.rebuildViewport()
-		return m, nil
+		// Only "Add New Profile" option
+		totalOpts = 1
 	}
 
 	switch msg.String() {
@@ -263,13 +309,13 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.settingsProfileSel > 0 {
 			m.settingsProfileSel--
 		} else {
-			m.settingsProfileSel = len(profiles) - 1
+			m.settingsProfileSel = totalOpts - 1
 		}
 		m.rebuildViewport()
 		return m, nil
 
 	case "down", "right", "tab":
-		if m.settingsProfileSel < len(profiles)-1 {
+		if m.settingsProfileSel < totalOpts-1 {
 			m.settingsProfileSel++
 		} else {
 			m.settingsProfileSel = 0
@@ -278,8 +324,32 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		// Switch to selected profile
 		selected := m.settingsProfileSel
+
+		// Check if "Add New Profile" was selected
+		addNewIdx := len(profiles)
+		if selected == addNewIdx {
+			// Create a new blank profile
+			newProfile := LLMProfile{
+				Name:     "Profile Baru",
+				Schema: "ollama",
+				Model:    "",
+				APIKey:   "",
+				BaseURL:  "",
+			}
+			m.settingsConfig.Profiles = append(m.settingsConfig.Profiles, newProfile)
+			m.settingsConfig.ActiveProfile = len(m.settingsConfig.Profiles) - 1
+
+			// Go back to settings main view, auto-select Skema field for editing
+			m.settingsShowProfileList = false
+			m.settingsCurrentField = settingsSchema
+			m.settingsEditBuffer = newProfile.Schema
+			m.settingsEditMode = true
+			m.rebuildViewport()
+			return m, nil
+		}
+
+		// Switch to selected profile
 		if selected >= 0 && selected < len(profiles) {
 			if err := m.switchProfile(selected); err != nil {
 				m.messages = append(m.messages, chatMessage{
@@ -295,7 +365,7 @@ func handleProfileListKey(m model, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					})
 				}
 				m.toolActivity = fmt.Sprintf("✓ Profil: %s (%s/%s)",
-					profiles[selected].Name, profiles[selected].Provider, profiles[selected].Model)
+					profiles[selected].Name, profiles[selected].Schema, profiles[selected].Model)
 			}
 		}
 		m.state = stateReady
@@ -332,8 +402,13 @@ func getSettingsFieldValue(m model, field settingsField) string {
 			return cfg.Profiles[cfg.ActiveProfile].Name
 		}
 		return "(no profile)"
-	case settingsProvider:
-		return cfg.ActiveConfig().Provider
+	case settingsProfileName:
+		if cfg.ActiveProfile >= 0 && cfg.ActiveProfile < len(cfg.Profiles) {
+			return cfg.Profiles[cfg.ActiveProfile].Name
+		}
+		return ""
+	case settingsSchema:
+		return cfg.ActiveConfig().Schema
 	case settingsModel:
 		return cfg.ActiveConfig().Model
 	case settingsAPIKey:
@@ -361,11 +436,11 @@ func applySettingsFieldValue(m *model, field settingsField, value string) {
 	}
 
 	switch field {
-	case settingsProfile:
+	case settingsProfile, settingsProfileName:
 		// Profile name change
 		m.settingsConfig.Profiles[profileIdx].Name = value
-	case settingsProvider:
-		m.settingsConfig.Profiles[profileIdx].Provider = value
+	case settingsSchema:
+		m.settingsConfig.Profiles[profileIdx].Schema = value
 	case settingsModel:
 		m.settingsConfig.Profiles[profileIdx].Model = value
 	case settingsAPIKey:

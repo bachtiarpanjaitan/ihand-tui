@@ -22,7 +22,7 @@ var availableCommands = []slashCommand{
 	{name: "/auto", desc: "mode otonom (multi-step otomatis)"},
 	{name: "/effort", desc: "set AI thinking effort (low/med/high)"},
 	{name: "/self-update", desc: "update ke versi terbaru"},
-	{name: "/settings", desc: "ubah pengaturan (provider, model, API key, dll)"},
+	{name: "/settings", desc: "ubah pengaturan (skema, model, API key, dll)"},
 }
 
 func computeSuggestions(input string) []string {

@@ -188,10 +188,10 @@ func NewEditFileTool(allowedDir string) *EditFileTool {
 func (t *EditFileTool) Name() string { return "edit_file" }
 
 func (t *EditFileTool) Description() string {
-	return "Mengedit baris tertentu dalam file yang sudah ada menggunakan search & replace. " +
+	return "Mengedit file yang sudah ada menggunakan search & replace (exact match). " +
 		"Tidak perlu mengirim seluruh konten file — cukup kirim bagian yang ingin diubah. " +
 		"Cari blok teks yang UNIK dalam file, lalu ganti dengan teks baru. " +
-		"search HARUS cocok persis dengan teks yang ada di file (termasuk spasi/indentasi). " +
+		"Trailing whitespace (spasi/tab di akhir baris) akan diabaikan saat matching. " +
 		"Gunakan read_file dulu untuk melihat konten file, lalu copy-paste bagian yang ingin diubah. " +
 		"Jauh lebih hemat token daripada write_file untuk file besar. " +
 		"Contoh: edit_file({\"path\": \"main.go\", \"search\": \"fmt.Println(\\\"hello\\\")\", \"replace\": \"fmt.Println(\\\"hi\\\")\"})"
@@ -202,7 +202,7 @@ func (t *EditFileTool) InputSchema() *core.JSONSchema {
 		Type: "object",
 		Properties: map[string]*core.JSONSchemaProp{
 			"path":    {Type: "string", Description: "Path relatif ke file yang akan diedit"},
-			"search":  {Type: "string", Description: "Teks persis yang akan dicari (case-sensitive, termasuk spasi/indentasi). Harus UNIK dalam file."},
+			"search":  {Type: "string", Description: "Teks persis yang akan dicari (case-sensitive). Trailing whitespace diabaikan. Harus UNIK dalam file."},
 			"replace": {Type: "string", Description: "Teks pengganti untuk menggantikan search text"},
 		},
 		Required: []string{"path", "search", "replace"},
@@ -238,17 +238,42 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	}
 	oldStr := string(oldContent)
 
-	// Hitung jumlah occurences
-	count := strings.Count(oldStr, params.Search)
+	// Normalisasi line endings (CRLF → LF)
+	oldStr = strings.ReplaceAll(oldStr, "\r\n", "\n")
+	searchStr := strings.ReplaceAll(params.Search, "\r\n", "\n")
+	replaceStr := strings.ReplaceAll(params.Replace, "\r\n", "\n")
+
+	// --- Attempt 1: Exact match ---
+	count := strings.Count(oldStr, searchStr)
+
+	// --- Attempt 2: Trim trailing whitespace per line ---
+	var matchedOrig string // original (untrimmed) text that matched
 	if count == 0 {
-		return json.RawMessage(fmt.Sprintf(`{"error": "search text tidak ditemukan di file %s. Pastikan spasi dan indentasi persis sama. Gunakan read_file untuk melihat konten asli file."}`, params.Path)), nil
-	}
-	if count > 1 {
-		return json.RawMessage(fmt.Sprintf(`{"error": "search text ditemukan %d kali di file %s. Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`, count, params.Path)), nil
+		var trimCount int
+		trimCount, matchedOrig = tryTrimMatch(oldStr, searchStr)
+		if trimCount == 0 {
+			// Build informative error with file excerpt
+			excerpt := buildFileExcerpt(oldStr, searchStr)
+			return json.RawMessage(fmt.Sprintf(
+				`{"error": "search text tidak ditemukan di file %s (setelah normalisasi whitespace). %s"}`,
+				params.Path, excerpt)), nil
+		}
+		if trimCount > 1 {
+			return json.RawMessage(fmt.Sprintf(
+				`{"error": "search text ditemukan %d kali di file %s (setelah trimming trailing whitespace). Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`,
+				trimCount, params.Path)), nil
+		}
+		// trimCount == 1 — use the matched original text for replacement
+		count = 1
+		searchStr = matchedOrig
+	} else if count > 1 {
+		return json.RawMessage(fmt.Sprintf(
+			`{"error": "search text ditemukan %d kali di file %s. Sertakan konteks lebih banyak (beberapa baris sebelum/sesudah) agar pencarian UNIK."}`,
+			count, params.Path)), nil
 	}
 
 	// Lakukan replace (hanya 1 kali karena sudah dipastikan unik)
-	newContent := strings.Replace(oldStr, params.Search, params.Replace, 1)
+	newContent := strings.Replace(oldStr, searchStr, replaceStr, 1)
 
 	// Tulis file
 	if err := os.WriteFile(fullPath, []byte(newContent), 0644); err != nil {
@@ -265,8 +290,8 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	diff := computeDiff(oldStr, newContent)
 
 	// Hitung statistik perubahan
-	oldLines := strings.Count(params.Search, "\n") + 1
-	newLines := strings.Count(params.Replace, "\n") + 1
+	oldLines := strings.Count(searchStr, "\n") + 1
+	newLines := strings.Count(replaceStr, "\n") + 1
 
 	result, _ := json.Marshal(map[string]any{
 		"success":       true,
@@ -276,6 +301,114 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 		"diff":          diff,
 	})
 	return json.RawMessage(result), nil
+}
+
+// ---------------------------------------------------------------------------
+// Edit helpers
+// ---------------------------------------------------------------------------
+
+// tryTrimMatch attempts to match search in content by trimming trailing
+// whitespace (spaces and tabs) from each line. Returns the match count and,
+// for unique matches, the original (untrimmed) text from content.
+func tryTrimMatch(content, search string) (int, string) {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+
+	if len(searchLines) == 0 || len(contentLines) == 0 {
+		return 0, ""
+	}
+
+	// Build trimmed versions
+	contentTrimmed := make([]string, len(contentLines))
+	for i, l := range contentLines {
+		contentTrimmed[i] = strings.TrimRight(l, " \t")
+	}
+	searchTrimmed := make([]string, len(searchLines))
+	for i, l := range searchLines {
+		searchTrimmed[i] = strings.TrimRight(l, " \t")
+	}
+
+	// Slide through content looking for exact trimmed match
+	searchLen := len(searchTrimmed)
+	var matches []int // starting line indices in contentLines
+
+	for i := 0; i <= len(contentTrimmed)-searchLen; i++ {
+		match := true
+		for j := 0; j < searchLen; j++ {
+			if contentTrimmed[i+j] != searchTrimmed[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			matches = append(matches, i)
+		}
+	}
+
+	if len(matches) == 1 {
+		matchedOrig := strings.Join(contentLines[matches[0]:matches[0]+searchLen], "\n")
+		return 1, matchedOrig
+	}
+
+	return len(matches), ""
+}
+
+// buildFileExcerpt returns a helpful excerpt from the file near where the
+// search text's first line was found (after trimming), or the top of the file.
+func buildFileExcerpt(content, search string) string {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(search, "\n")
+
+	// Try to find the first trimmed line of search in content (trimmed)
+	firstSearchLine := strings.TrimRight(searchLines[0], " \t")
+
+	bestLine := 0
+	for i, l := range contentLines {
+		if strings.TrimRight(l, " \t") == firstSearchLine {
+			bestLine = i
+			break
+		}
+	}
+
+	// Show ~20 lines around the best match (or from top)
+	start := bestLine - 3
+	if start < 0 {
+		start = 0
+	}
+	end := start + 20
+	if end > len(contentLines) {
+		end = len(contentLines)
+	}
+
+	// If no match found, show first 20 lines
+	if bestLine == 0 && len(contentLines) > 0 &&
+		strings.TrimRight(contentLines[0], " \t") != firstSearchLine {
+		start = 0
+		end = 20
+		if end > len(contentLines) {
+			end = len(contentLines)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("File excerpt (dengan nomor baris):\n")
+	for i := start; i < end; i++ {
+		marker := "  "
+		if i == bestLine && bestLine > 0 {
+			marker = "→ "
+		}
+		sb.WriteString(fmt.Sprintf("%s%4d: %s\n", marker, i+1, contentLines[i]))
+	}
+	if end < len(contentLines) {
+		sb.WriteString(fmt.Sprintf("    ... (%d total baris)\n", len(contentLines)))
+	}
+
+	// Helpful hint about whitespace
+	sb.WriteString("\nHINT: Copy-paste teks persis dari file asli. ")
+	sb.WriteString("Trailing whitespace (spasi/tab di akhir baris) sudah diabaikan saat matching. ")
+	sb.WriteString("Jika masih gagal, gunakan write_file untuk menulis ulang file.")
+
+	return sb.String()
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +459,39 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 	if err != nil {
 		return json.RawMessage(fmt.Sprintf(`{"error": "file tidak ditemukan: %s"}`, params.Path)), nil
 	}
+
+	// Jika path adalah direktori, otomatis kembalikan listing isinya
+	if info.IsDir() {
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca direktori: %s"}`, err.Error())), nil
+		}
+
+		var files []map[string]any
+		for _, e := range entries {
+			fi, _ := e.Info()
+			size := int64(0)
+			isDir := e.IsDir()
+			if fi != nil && !isDir {
+				size = fi.Size()
+			}
+			files = append(files, map[string]any{
+				"name":  e.Name(),
+				"isDir": isDir,
+				"size":  size,
+			})
+		}
+
+		result, _ := json.Marshal(map[string]any{
+			"path":    params.Path,
+			"is_dir":  true,
+			"count":   len(files),
+			"files":   files,
+			"message": fmt.Sprintf("%s adalah direktori dengan %d item", params.Path, len(files)),
+		})
+		return json.RawMessage(result), nil
+	}
+
 	if info.Size() > 1_000_000 {
 		return json.RawMessage(fmt.Sprintf(`{"error": "file terlalu besar (max 1MB): %d bytes"}`, info.Size())), nil
 	}
@@ -344,6 +510,14 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (json
 }
 
 // ---------------------------------------------------------------------------
+// treeEntry is used for recursive directory listing.
+type treeEntry struct {
+	Name  string       `json:"name"`
+	IsDir bool         `json:"isDir"`
+	Size  int64        `json:"size,omitempty"`
+	Files []*treeEntry `json:"files,omitempty"`
+}
+
 // ListFilesTool — list file dalam direktori yang diizinkan
 // ---------------------------------------------------------------------------
 
@@ -360,14 +534,16 @@ func (t *ListFilesTool) Name() string { return "list_files" }
 func (t *ListFilesTool) Description() string {
 	return "Menampilkan daftar file dan folder dalam direktori yang diizinkan. " +
 		"Gunakan untuk melihat struktur file. " +
-		"Input: {\"path\": \".\"} (kosongkan atau gunakan \".\" untuk root direktori)"
+		"Parameter depth (default 1): gunakan nilai >1 untuk recursive listing (mirip tree). " +
+		"Contoh: list_files({\"path\": \".\", \"depth\": \"3\"}) untuk tree 3 level."
 }
 
 func (t *ListFilesTool) InputSchema() *core.JSONSchema {
 	return &core.JSONSchema{
 		Type: "object",
 		Properties: map[string]*core.JSONSchemaProp{
-			"path": {Type: "string", Description: "Path relatif ke folder yang akan di-list (default: \".\")"},
+			"path":  {Type: "string", Description: "Path relatif ke folder yang akan di-list (default: \".\")"},
+			"depth": {Type: "string", Description: "Kedalaman recursive listing (default: 1). Gunakan 2-3 untuk tree view."},
 		},
 		Required: []string{},
 	}
@@ -375,13 +551,24 @@ func (t *ListFilesTool) InputSchema() *core.JSONSchema {
 
 func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Path string `json:"path"`
+		Path  string `json:"path"`
+		Depth string `json:"depth"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		params.Path = "."
 	}
 	if params.Path == "" {
 		params.Path = "."
+	}
+	depth := 1
+	if params.Depth != "" {
+		fmt.Sscanf(params.Depth, "%d", &depth)
+		if depth < 1 {
+			depth = 1
+		}
+		if depth > 5 {
+			depth = 5 // batasi max depth
+		}
 	}
 
 	fullPath, err := t.resolvePath(params.Path)
@@ -398,30 +585,57 @@ func (t *ListFilesTool) Execute(ctx context.Context, input json.RawMessage) (jso
 		return json.RawMessage(fmt.Sprintf(`{"error": "%s adalah file, bukan direktori"}`, params.Path)), nil
 	}
 
-	entries, err := os.ReadDir(fullPath)
+	// Recursive listing
+	var listDir func(dirPath string, currentDepth int) ([]*treeEntry, error)
+	listDir = func(dirPath string, currentDepth int) ([]*treeEntry, error) {
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return nil, err
+		}
+
+		var result []*treeEntry
+		for _, e := range entries {
+			info, _ := e.Info()
+			size := int64(0)
+			isDir := e.IsDir()
+			if info != nil && !isDir {
+				size = info.Size()
+			}
+			entry := &treeEntry{
+				Name:  e.Name(),
+				IsDir: isDir,
+				Size:  size,
+			}
+			// Recurse into subdirectories if depth allows
+			if isDir && currentDepth < depth {
+				children, err := listDir(filepath.Join(dirPath, e.Name()), currentDepth+1)
+				if err == nil {
+					entry.Files = children
+				}
+			}
+			result = append(result, entry)
+		}
+		return result, nil
+	}
+
+	files, err := listDir(fullPath, 1)
 	if err != nil {
 		return json.RawMessage(fmt.Sprintf(`{"error": "gagal membaca direktori: %s"}`, err.Error())), nil
 	}
 
-	var files []map[string]any
-	for _, e := range entries {
-		info, _ := e.Info()
-		size := int64(0)
-		isDir := e.IsDir()
-		if info != nil && !isDir {
-			size = info.Size()
-		}
-		files = append(files, map[string]any{
-			"name":  e.Name(),
-			"isDir": isDir,
-			"size":  size,
-		})
-	}
+	// Build a flat + tree representation
+	totalCount := countEntries(files)
+
+	// Also build a readable tree string
+	treeStr := buildTreeString(files, "", depth)
 
 	result, _ := json.Marshal(map[string]any{
-		"path":  params.Path,
-		"count": len(files),
-		"files": files,
+		"path":      params.Path,
+		"depth":     depth,
+		"count":     totalCount,
+		"files":     files,
+		"tree":      treeStr,
+		"tree_lines": strings.Split(strings.TrimRight(treeStr, "\n"), "\n"),
 	})
 	return json.RawMessage(result), nil
 }
@@ -1131,13 +1345,19 @@ func resolveSafePath(allowedDir, relPath string) (string, error) {
 		return "", fmt.Errorf("path traversal tidak diizinkan: %s", relPath)
 	}
 
-	// Resolve absolute path
+	// Resolve absolute path dari allowedDir
 	absAllowed, err := filepath.Abs(allowedDir)
 	if err != nil {
 		return "", fmt.Errorf("gagal resolve allowedDir: %w", err)
 	}
 
-	fullPath := filepath.Join(absAllowed, clean)
+	var fullPath string
+	if filepath.IsAbs(clean) {
+		fullPath = clean
+	} else {
+		fullPath = filepath.Join(absAllowed, clean)
+	}
+
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("gagal resolve path: %w", err)
@@ -1215,4 +1435,44 @@ func computeDiff(oldContent, newContent string) string {
 
 	// Gabung baris diff dengan newline (raw text, bukan JSON)
 	return strings.Join(diffLines, "\n")
+}
+
+// countEntries recursively counts all file entries including nested children.
+func countEntries(entries []*treeEntry) int {
+	count := 0
+	for _, e := range entries {
+		count++
+		if e.Files != nil {
+			count += countEntries(e.Files)
+		}
+	}
+	return count
+}
+
+// buildTreeString returns a visual tree representation of the file entries.
+func buildTreeString(entries []*treeEntry, prefix string, maxDepth int) string {
+	var b strings.Builder
+	for i, e := range entries {
+		isLast := i == len(entries)-1
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+		b.WriteString(prefix + connector + e.Name)
+		if e.IsDir {
+			b.WriteString("/")
+		}
+		b.WriteString("\n")
+
+		if e.IsDir && e.Files != nil {
+			childPrefix := prefix
+			if isLast {
+				childPrefix += "    "
+			} else {
+				childPrefix += "│   "
+			}
+			b.WriteString(buildTreeString(e.Files, childPrefix, maxDepth))
+		}
+	}
+	return b.String()
 }

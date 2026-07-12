@@ -1,10 +1,21 @@
 {
-  "llm": {
-    "provider": "ollama",
-    "model": "llama3.2",
-    "api_key": "",
-    "base_url": ""
-  },
+  "profiles": [
+    {
+      "name": "Claude",
+      "schema": "anthropic",
+      "model": "claude-4.5-sonnet",
+      "api_key": "",
+      "base_url": ""
+    },
+    {
+      "name": "Deepseek",
+      "schema": "openai",
+      "model": "deepseek-v4-pro",
+      "api_key": "",
+      "base_url": "https://api.deepseek.com/v1"
+    }
+  ],
+  "active_profile": 1,
   "app": {
     "allowed_dir": ".",
     "session": "default"

@@ -25,7 +25,7 @@ func selfUpdate(currentVersion string) string {
 	// --- Fetch latest release info -----------------------------------------
 	release, err := fetchLatestRelease()
 	if err != nil {
-		return fmt.Sprintf("❌ Gagal cek update: %v", err)
+		return fmt.Sprintf("Gagal cek update: %v", err)
 	}
 
 	latest := strings.TrimPrefix(release.Tag, "v")
@@ -55,31 +55,31 @@ func selfUpdate(currentVersion string) string {
 		}
 	}
 	if downloadURL == "" {
-		return fmt.Sprintf("❌ Tidak ada binary untuk platform ini (%s/%s)", runtime.GOOS, runtime.GOARCH)
+		return fmt.Sprintf("Tidak ada binary untuk platform ini (%s/%s)", runtime.GOOS, runtime.GOARCH)
 	}
 
 	// --- Download ----------------------------------------------------------
 	tmpDir, err := os.MkdirTemp("", "ihand-update")
 	if err != nil {
-		return fmt.Sprintf("❌ Gagal buat temp dir: %v", err)
+		return fmt.Sprintf("Gagal buat temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	archivePath := filepath.Join(tmpDir, assetName)
 	if err := downloadFile(downloadURL, archivePath); err != nil {
-		return fmt.Sprintf("❌ Gagal download: %v", err)
+		return fmt.Sprintf("Gagal download: %v", err)
 	}
 
 	// --- Extract binary ----------------------------------------------------
 	newBinary, err := extractBinary(archivePath, tmpDir)
 	if err != nil {
-		return fmt.Sprintf("❌ Gagal ekstrak: %v", err)
+		return fmt.Sprintf("Gagal ekstrak: %v", err)
 	}
 
 	// --- Replace current binary --------------------------------------------
 	currentPath, err := os.Executable()
 	if err != nil {
-		return fmt.Sprintf("❌ Gagal cari binary saat ini: %v", err)
+		return fmt.Sprintf("Gagal cari binary saat ini: %v", err)
 	}
 
 	if runtime.GOOS == "windows" {
@@ -276,7 +276,7 @@ func replaceOnUnix(currentPath, newPath, latest string) string {
 	// Permission denied — save binary in temp dir, then try sudo cp
 	savedPath := filepath.Join(os.TempDir(), "ihand-new")
 	if err := copyFile(newPath, savedPath); err != nil {
-		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
+		return fmt.Sprintf("Gagal menyimpan binary baru: %v", err)
 	}
 
 	// Skip sudo otomatis — akan mengambil alih terminal dan TUI gak bisa di-cancel.
@@ -297,7 +297,7 @@ func replaceOnWindows(currentPath, newPath, latest string) string {
 
 	// Save new binary
 	if err := copyFile(newPath, newSaved); err != nil {
-		return fmt.Sprintf("❌ Gagal menyimpan binary baru: %v", err)
+		return fmt.Sprintf("Gagal menyimpan binary baru: %v", err)
 	}
 
 	// Create batch script to finish the update
@@ -328,7 +328,7 @@ func replaceOnWindows(currentPath, newPath, latest string) string {
 	)
 
 	if err := os.WriteFile(batPath, []byte(bat), 0644); err != nil {
-		return fmt.Sprintf("❌ Gagal buat update script: %v", err)
+		return fmt.Sprintf("Gagal buat update script: %v", err)
 	}
 
 	return fmt.Sprintf(

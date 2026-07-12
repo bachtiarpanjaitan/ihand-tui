@@ -14,7 +14,7 @@ import (
 type tickMsg time.Time
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -31,69 +31,25 @@ func (m model) Init() tea.Cmd {
 }
 
 func formatStreamForDisplay(content string) string {
-	// Cari tool call — tampilkan tool + path file
+	// For actions: just track them, don't return label text.
+	// The activity indicator will show accumulated counts.
 	if strings.Contains(content, "Action:") {
-		var toolName string
-		var path string
+		return "" // let trackAction handle counting
+	}
 
-		lines := strings.Split(content, "\n")
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-
-			if strings.HasPrefix(trimmed, "Action:") {
-				action := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action:"))
-				if idx := strings.Index(action, "("); idx > 0 {
-					toolName = strings.TrimSpace(action[:idx])
-				} else {
-					toolName = action
-				}
-			}
-
-			// Cari path dari Action Input atau dari Action: inline
-			if toolName != "" && path == "" {
-				if strings.HasPrefix(trimmed, "Action Input:") {
-					input := strings.TrimSpace(strings.TrimPrefix(trimmed, "Action Input:"))
-					if p := extractField(input, "\"path\""); p != "" {
-						path = p
-					}
-				}
-				if path == "" {
-					if p := extractField(line, "\"path\""); p != "" {
-						path = p
-					}
-				}
-			}
+	// Final Answer: return the answer text (flexible detection)
+	if hasFinalAnswer(content) {
+		answer := extractFinalAnswer(content)
+		if len(answer) > 2000 {
+			answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
 		}
-
-		if toolName != "" {
-			if path != "" {
-				return toolName + "(" + path + ")"
-			}
-			return toolName + "()"
+		if answer != "" {
+			return answer
 		}
 	}
 
-	if strings.Contains(content, "Final Answer:") {
-		if idx := strings.Index(content, "Final Answer:"); idx >= 0 {
-			answer := strings.TrimSpace(content[idx+13:])
-			if len(answer) > 2000 {
-				answer = answer[:2000] + "\n\n... *(respons terlalu panjang)*"
-			}
-			return "Jawaban: " + answer
-		}
-	}
-
-	// Teks biasa — tampilkan sebagian agar user lihat proses real-time
-	display := strings.TrimSpace(content)
-	if len(display) > 400 {
-		display = display[:400] + "..."
-	}
-	if display != "" {
-		return display
-	}
 	return ""
 }
-
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -112,21 +68,74 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
 
+	case tea.PasteMsg:
+		// Handle paste in settings edit mode
+		if m.state == stateSettings && m.settingsEditMode {
+			if m.settingsSelectAll {
+				m.settingsEditBuffer = msg.Content // replace
+				m.settingsSelectAll = false
+			} else {
+				m.settingsEditBuffer += msg.Content // append
+			}
+			m.rebuildViewport()
+			return m, nil
+		}
+		// Forward to textarea in other modes
+		var cmd tea.Cmd
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
+
 	case streamChunkMsg:
 		if m.streamStartTime.IsZero() {
 			m.streamStartTime = time.Now()
 			m.streamingContent = ""
-			// Add a placeholder message for the stream
-			m.messages = append(m.messages, chatMessage{
-				role:    "assistant",
-				content: "",
-				timing:  0,
-			})
+			m.activityContent = "Sedang Berpikir..."
+			m.shownToolKeys = make(map[string]bool) // reset for new stream
+
+			m.earlyTools = nil                      // reset early-executed tools
+			m.earlyToolKeys = make(map[string]bool) // reset dedup keys
+			// Update existing activity indicator or create new one
+			found := false
+			for i := len(m.messages) - 1; i >= 0; i-- {
+				if m.messages[i].role == "assistant" && m.messages[i].streaming {
+					m.messages[i].timing = 0
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.messages = append(m.messages, chatMessage{
+					role:      "assistant",
+					content:   "", // filled by tick handler
+					timing:    0,
+					streaming: true,
+				})
+			}
 		}
 
 		if !msg.done {
 			m.streamingContent += msg.content
-			m.messages[len(m.messages)-1].content = formatStreamForDisplay(m.streamingContent)
+			if msg.finishReason != "" {
+				m.lastFinishReason = msg.finishReason
+			}
+			display := formatStreamForDisplay(m.streamingContent)
+			if display != "" {
+				// Final Answer text — update activity indicator, keep streaming=true
+				// so the next chunk reuses this placeholder instead of creating a new one.
+				m.activityContent = display
+				m.messages[len(m.messages)-1].content = display
+			} else if strings.Contains(m.streamingContent, "Action:") {
+				// Track action in counters for summary
+				m.trackActionFromContent(m.streamingContent)
+				summary := m.actionCounts.String()
+				if summary != "" {
+					m.activityContent = "Sedang Berpikir... (" + summary + ")"
+				} else {
+					m.activityContent = "Sedang Berpikir..."
+				}
+				// Show pending tool calls in the viewport immediately
+				m.showPendingToolCalls()
+			}
 			// Update estimated tokens live during streaming
 			m.totalTokens = msg.state.totalTokens + countTokens(m.streamingContent)
 			// Parse task checklist dari streaming content
@@ -136,40 +145,76 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recalcLayout() // sesuaikan ukuran viewport untuk task panel
 			}
 
-			// Early tool execution: eksekusi tool auto-trusted langsung saat streaming
-			if m.earlyTool.toolName == "" {
-				if toolCall, isFinal := parseReActResponse(m.streamingContent); toolCall.name != "" && !isFinal && toolCall.input != "{}" {
-					if isToolAutoTrustedMode(m.mode, toolCall.name) {
-						toolOutput := executeToolCall(msg.state.activeTools, toolCall)
-						isToolErr := strings.HasPrefix(toolOutput, "Error")
-						m.earlyTool = earlyToolExec{
-							toolName: toolCall.name,
-							input:    toolCall.input,
-							output:   toolOutput,
-							isError:  isToolErr,
-						}
-						display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput)
-						role := "tool"
-						if isToolErr {
-							role = "tool-error"
-						}
-						m.toolActivity = fmt.Sprintf("%s", toolCall.name)
-						placeholderIdx := len(m.messages) - 1
-						// Replace the streaming placeholder with the tool result (avoids duplication)
-						m.messages[placeholderIdx] = chatMessage{
-							role:    role,
-							content: display,
-							tokens:  0,
-						}
-						// Add a NEW placeholder for remaining stream content
-						m.messages = append(m.messages, chatMessage{
-							role:    "assistant",
-							content: "",
-							timing:  0,
-						})
-						m.refreshViewport()
+			// Early tool execution: eksekusi semua tool auto-trusted langsung saat streaming
+			allCalls := parseReActAll(m.streamingContent)
+			for _, toolCall := range allCalls {
+				if toolCall.name == "" || toolCall.input == "{}" {
+					continue
+				}
+				// Build dedup key
+				path := extractField(toolCall.input, `"path"`)
+				command := extractField(toolCall.input, `"command"`)
+				key := toolCall.name + "|" + path + "|" + command
+				if m.earlyToolKeys[key] {
+					continue
+				}
+				if !isToolAutoTrustedMode(m.mode, m.trustWrite, toolCall.name) {
+					continue // bukan auto-trusted, skip (diproses setelah stream selesai)
+				}
+				// Eksekusi tool langsung saat streaming
+				toolOutput := executeToolCall(msg.state.activeTools, toolCall)
+				isToolErr := strings.HasPrefix(toolOutput, "Error")
+				m.earlyTools = append(m.earlyTools, earlyToolExec{
+					toolName: toolCall.name,
+					input:    toolCall.input,
+					output:   toolOutput,
+					isError:  isToolErr,
+				})
+				m.earlyToolKeys[key] = true
+				display := formatToolDisplay(toolCall.name, toolCall.input, toolOutput, m.allowedDir)
+				role := "tool"
+				if isToolErr {
+					role = "tool-error"
+				}
+				m.toolActivity = fmt.Sprintf("%s", toolCall.name)
+				// Update pending tool message if it exists (from showPendingToolCalls),
+				// otherwise replace the streaming placeholder.
+				pendingIdx := -1
+				for i := len(m.messages) - 1; i >= 0; i-- {
+					if m.messages[i].toolName == toolCall.name {
+						pendingIdx = i
+						break
 					}
 				}
+				if pendingIdx >= 0 {
+					m.messages[pendingIdx].content = display
+					m.messages[pendingIdx].role = role
+				} else {
+					// Find streaming placeholder and replace it
+					placeholderIdx := -1
+					for i := len(m.messages) - 1; i >= 0; i-- {
+						if m.messages[i].role == "assistant" && m.messages[i].streaming {
+							placeholderIdx = i
+							break
+						}
+					}
+					if placeholderIdx >= 0 {
+						m.messages[placeholderIdx] = chatMessage{
+							role:     role,
+							content:  display,
+							toolName: toolCall.name,
+							tokens:   0,
+						}
+					}
+					// Add a NEW placeholder for remaining stream content
+					m.messages = append(m.messages, chatMessage{
+						role:      "assistant",
+						content:   "",
+						timing:    0,
+						streaming: true,
+					})
+				}
+				m.refreshViewport()
 			}
 			m.messages[len(m.messages)-1].timing = time.Since(m.streamStartTime)
 
@@ -191,21 +236,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamStartTime = time.Time{}
 		m.streamingContent = ""
 
-		// Hapus placeholder assistant (kosong atau "Jawaban:" dari formatStreamForDisplay)
-		for i := len(m.messages) - 1; i >= 0; i-- {
-			msg := m.messages[i]
-			if msg.role == "assistant" && (msg.content == "" || strings.HasPrefix(msg.content, "Jawaban:")) {
-				m.messages = append(m.messages[:i], m.messages[i+1:]...)
-				break
-			}
-		}
+		// Keep activity indicator alive (don't mark as done)
+		// The next stream will update its content in-place
 
-		// Dispatch to the regular ReAct handler
+		// Dispatch to the regular ReAct handler with finish reason
+		fr := m.lastFinishReason
+		m.lastFinishReason = ""
 		return m, func() tea.Msg {
 			return chatStepResultMsg{
-				state:    msg.state,
-				response: finalResp,
-				err:      nil,
+				state:        msg.state,
+				response:     finalResp,
+				err:          nil,
+				finishReason: fr,
 			}
 		}
 
@@ -238,25 +280,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 			spinner := spinnerFrames[m.tickCount%len(spinnerFrames)]
 
-			// Status message (bottom bar)
-			m.statusMsg = fmt.Sprintf("%s Memproses", spinner)
-
-			// Animate spinner on the streaming assistant message (not tool results)
+			// Animate spinner on the activity indicator (shown in viewport)
+			// activityContent is managed by streaming handler, tick only adds spinner
 			for i := len(m.messages) - 1; i >= 0; i-- {
-				msg := m.messages[i]
-				if msg.role == "assistant" {
-					base := msg.content
-					// Remove any existing spinner or dot prefix
-					for _, f := range spinnerFrames {
-						base = strings.TrimPrefix(base, f+" ")
-					}
-					base = strings.TrimLeft(base, ".")
-					base = strings.TrimSpace(base)
-					// Tambah spinner di depan — jika base kosong, tulis "Sedang Berpikir"
-					if base == "" {
-						m.messages[i].content = spinner + " Sedang Berpikir"
+				if m.messages[i].role == "assistant" && m.messages[i].streaming {
+					// Skip if showing Final Answer content (already set by chunk handler)
+					// Action summaries start with "Sedang Berpikir" and should get spinner prefix
+					if m.activityContent != "" && !strings.HasPrefix(m.activityContent, "Sedang Berpikir") {
+						// Final Answer content — don't overwrite with spinner
+					} else if m.activityContent != "" {
+						m.messages[i].content = spinner + " " + m.activityContent
 					} else {
-						m.messages[i].content = spinner + " " + base
+						m.messages[i].content = spinner + " Sedang Berpikir"
 					}
 					// Refresh viewport agar perubahan langsung terlihat
 					m.refreshViewport()
@@ -338,6 +373,13 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 
 	case "esc":
+		// Cancel suggestions if visible
+		if len(m.suggestions) > 0 {
+			m.suggestions = nil
+			m.suggestionType = ""
+			m.selSugg = -1
+			return m, nil
+		}
 		if m.state == stateSelectingEffort {
 			m.state = stateReady
 			m.textarea.Focus()
@@ -359,7 +401,7 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+s":
-			return m, copyConversation(&m)
+		return m, copyConversation(&m)
 
 	case "shift+enter", "ctrl+j":
 		if m.state == stateThinking {
@@ -458,6 +500,29 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.textarea.Reset()
 				return m.handleCommand(cmdStr)
 			}
+			if m.suggestionType == "file" {
+				// Accept the highlighted file suggestion (same as Tab)
+				currentValue := m.textarea.Value()
+				before := currentValue[:m.fileQueryStart]
+				afterAt := currentValue[m.fileQueryStart+1:]
+				spaceIdx := strings.IndexAny(afterAt, " \t\n\r")
+				var after string
+				if spaceIdx >= 0 {
+					after = afterAt[spaceIdx:]
+				}
+				fullPath := m.suggestions[m.selSugg]
+				displayName := filepath.Base(strings.TrimSuffix(fullPath, "/"))
+				if strings.HasSuffix(fullPath, "/") {
+					displayName += "/"
+				}
+				m.fileMentions[displayName] = fullPath
+				m.textarea.SetValue(before + "@" + displayName + after)
+				m.textarea.CursorEnd()
+				m.suggestions = nil
+				m.suggestionType = ""
+				m.selSugg = -1
+				return m, nil
+			}
 		}
 
 		m.suggestions = nil
@@ -494,6 +559,8 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Clear file mentions after sending
 		m.fileMentions = make(map[string]string)
 		m.taskList = nil
+		m.actionCounts = actionCounters{}
+		m.activityContent = ""
 		m.recalcLayout()
 
 		content := m.buildConversation()
@@ -581,6 +648,10 @@ func (m model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.fileMentions[displayName] = fullPath
 					m.textarea.SetValue(before + "@" + displayName + after)
 					m.textarea.CursorEnd()
+					// Clear suggestions after accepting a file mention
+					m.suggestions = nil
+					m.suggestionType = ""
+					m.selSugg = -1
 				} else {
 					// For commands, just cycle the selection, do not fill the textarea
 				}
@@ -690,7 +761,7 @@ func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
 		)},
 	)
 	state.iteration++
-	display := formatToolDisplay(m.pendingTool.name, m.pendingTool.input, toolOutput)
+	display := formatToolDisplay(m.pendingTool.name, m.pendingTool.input, toolOutput, m.allowedDir)
 	// Activity bar: concise summary (single line, tanpa diff)
 	path := extractField(toolOutput, `"path"`)
 	if path == "" {
@@ -698,9 +769,10 @@ func (m model) handleConfirmApprove() (tea.Model, tea.Cmd) {
 	}
 	m.toolActivity = fmt.Sprintf("%s \u2014 Selesai", path)
 	m.messages = append(m.messages, chatMessage{
-		role:    "tool",
-		content: display,
-		tokens:  0,
+		role:     "tool",
+		content:  display,
+		toolName: m.pendingTool.name,
+		tokens:   0,
 	})
 	m.state = stateThinking
 	m.pendingTool = reActTool{}

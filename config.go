@@ -6,18 +6,18 @@ import (
 	"os"
 )
 
-// LLMProfile holds a named LLM provider configuration (one entry in the profiles list).
+// LLMProfile holds a named LLM schema configuration (one entry in the profiles list).
 type LLMProfile struct {
 	Name     string `json:"name"`     // display name, e.g. "Ollama Local"
-	Provider string `json:"provider"` // "openai", "anthropic", or "ollama"
+	Schema   string `json:"schema"`  // "openai", "anthropic", or "ollama"
 	Model    string `json:"model"`    // model name (e.g., "gpt-4o", "claude-sonnet-5")
 	APIKey   string `json:"api_key"`  // API key (required for openai/anthropic)
 	BaseURL  string `json:"base_url"` // optional custom endpoint URL
 }
 
-// LLMConfig holds a single LLM provider configuration (kept for backward compat).
+// LLMConfig holds a single LLM schema configuration (kept for backward compat).
 type LLMConfig struct {
-	Provider string `json:"provider"`
+	Schema   string `json:"schema"`
 	Model    string `json:"model"`
 	APIKey   string `json:"api_key"`
 	BaseURL  string `json:"base_url"`
@@ -40,6 +40,16 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
+		Profiles: []LLMProfile{
+			{
+				Name:    "Ollama Local",
+				Schema:  "ollama",
+				Model:   "llama3.2",
+				APIKey:  "",
+				BaseURL: "http://localhost:11434",
+			},
+		},
+		ActiveProfile: 0,
 		App: AppConfig{
 			AllowedDir: ".",
 			Session:    "default",
@@ -62,14 +72,12 @@ func LoadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("tidak bisa parsing file konfigurasi %s: %w", path, err)
 	}
 
-	// Backward compat: detect old format (has "llm" field from JSON)
-	// If profiles wasn't in the JSON (DefaultConfig didn't set it, unmarshal
-	// didn't overwrite it), migrate from the old flat llm field.
-	if cfg.LLM.Provider != "" {
+	// Migrate old flat "llm" format to profiles format.
+	if cfg.LLM.Schema != "" {
 		cfg.Profiles = []LLMProfile{
 			{
 				Name:     "Default",
-				Provider: cfg.LLM.Provider,
+				Schema: cfg.LLM.Schema,
 				Model:    cfg.LLM.Model,
 				APIKey:   cfg.LLM.APIKey,
 				BaseURL:  cfg.LLM.BaseURL,
@@ -83,7 +91,7 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Profiles = []LLMProfile{
 			{
 				Name:     "Ollama Local",
-				Provider: "ollama",
+				Schema: "ollama",
 				Model:    "llama3.2",
 				APIKey:   "",
 				BaseURL:  "http://localhost:11434",
@@ -101,7 +109,7 @@ func LoadConfig(path string) (Config, error) {
 	for i := range cfg.Profiles {
 		p := &cfg.Profiles[i]
 		if p.BaseURL == "" {
-			switch p.Provider {
+			switch p.Schema {
 			case "openai":
 				p.BaseURL = "https://api.openai.com/v1"
 			case "anthropic":
@@ -128,7 +136,7 @@ func (c Config) ActiveConfig() LLMConfig {
 	if c.ActiveProfile >= 0 && c.ActiveProfile < len(c.Profiles) {
 		p := c.Profiles[c.ActiveProfile]
 		return LLMConfig{
-			Provider: p.Provider,
+			Schema: p.Schema,
 			Model:    p.Model,
 			APIKey:   p.APIKey,
 			BaseURL:  p.BaseURL,
@@ -154,29 +162,29 @@ func (c Config) SaveConfig(path string) error {
 
 // Validate checks that the config is usable.
 func (c Config) Validate() error {
-	validProviders := map[string]bool{
+	validSchemas := map[string]bool{
 		"openai":    true,
 		"anthropic": true,
 		"ollama":    true,
 	}
 
 	active := c.ActiveConfig()
-	if active.Provider == "" && len(c.Profiles) > 0 {
+	if active.Schema == "" && len(c.Profiles) > 0 {
 		active = LLMConfig{
-			Provider: c.Profiles[0].Provider,
+			Schema: c.Profiles[0].Schema,
 			Model:    c.Profiles[0].Model,
 			APIKey:   c.Profiles[0].APIKey,
 			BaseURL:  c.Profiles[0].BaseURL,
 		}
 	}
 
-	if !validProviders[active.Provider] {
-		return fmt.Errorf("provider tidak dikenal: %q (gunakan openai, anthropic, atau ollama)", active.Provider)
+	if !validSchemas[active.Schema] {
+		return fmt.Errorf("skema tidak dikenal: %q (gunakan openai, anthropic, atau ollama)", active.Schema)
 	}
 
-	if active.Provider == "openai" || active.Provider == "anthropic" {
+	if active.Schema == "openai" || active.Schema == "anthropic" {
 		if active.APIKey == "" {
-			return fmt.Errorf("api_key diperlukan untuk provider %s", active.Provider)
+			return fmt.Errorf("api_key diperlukan untuk skema %s", active.Schema)
 		}
 	}
 

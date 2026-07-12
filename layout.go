@@ -1,5 +1,9 @@
 package main
 
+import (
+	lipgloss "charm.land/lipgloss/v2"
+)
+
 func (m *model) recalcLayout() {
 	fixedOverhead := 7
 	sugHeight := 0
@@ -7,17 +11,19 @@ func (m *model) recalcLayout() {
 		sugHeight = 1
 	}
 
-	// Default textarea is around 3 lines tall, but our selector UI is 5 lines tall.
-	// Adjust overhead when rendering those custom UIs.
+	// Calculate prompt/selector height dynamically to avoid cutting off prompt UIs
 	extraOverhead := 0
 	if m.state == stateSelectingEffort {
-		extraOverhead = 2 // 5 lines instead of 3
+		extraOverhead = lipgloss.Height(renderEffortSelector(m)) - 3 // relative to standard 3-line textarea
 	} else if m.state == stateConfirming {
-		extraOverhead = 3 // 6 lines instead of 3
+		extraOverhead = lipgloss.Height(renderConfirmPrompt(m)) - 3
 	} else if m.state == stateTrustPrompt {
-		extraOverhead = 8 // ~11 lines instead of 3
+		extraOverhead = lipgloss.Height(renderTrustPrompt(m)) - 3
 	} else if m.state == stateSettings {
-		extraOverhead = 14 // ~17 lines for settings form
+		extraOverhead = lipgloss.Height(renderSettings(m)) - 3
+	}
+	if extraOverhead < 0 {
+		extraOverhead = 0
 	}
 
 	// Task panel overhead

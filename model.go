@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bachtiarpanjaitan/ihandai-go"
@@ -38,7 +40,8 @@ type settingsField int
 
 const (
 	settingsProfile settingsField = iota
-	settingsProvider
+	settingsProfileName
+	settingsSchema
 	settingsModel
 	settingsAPIKey
 	settingsBaseURL
@@ -49,8 +52,8 @@ const (
 
 func (s settingsField) String() string {
 	switch s {
-	case settingsProvider:
-		return "Provider"
+	case settingsSchema:
+		return "Skema"
 	case settingsModel:
 		return "Model"
 	case settingsAPIKey:
@@ -168,10 +171,12 @@ func (e effortLevel) Tag() string {
 }
 
 type chatMessage struct {
-	role    string
-	content string
-	tokens  int
-	timing  time.Duration
+	role      string
+	content   string
+	toolName  string // nama tool (untuk tree-view rendering)
+	tokens    int
+	timing    time.Duration
+	streaming bool // true jika pesan masih dalam proses streaming
 }
 
 // taskItem represents one item in the plan/task checklist.
@@ -206,25 +211,79 @@ type toolCallMsg struct {
 
 // chatLoopState carries the ReAct loop state across async LLM calls.
 type chatLoopState struct {
-	session         string
-	messages        []core.Message
-	activeTools     []tools.Tool
-	iteration       int
-	toolCalls       []toolCallRecord
-	totalTokens     int
-	startTime       time.Time
+	session          string
+	messages         []core.Message
+	activeTools      []tools.Tool
+	iteration        int
+	toolCalls        []toolCallRecord
+	totalTokens      int
+	startTime        time.Time
+	consecutiveFails int // jumlah tool gagal berturut-turut (max 1 retry)
 }
 
 // chatStepResultMsg is returned by each async LLM call step.
 type chatStepResultMsg struct {
-	state    chatLoopState
-	response *core.Response
-	err      error
+	state        chatLoopState
+	response     *core.Response
+	err          error
+	finishReason string // API stop reason: "end_turn", "tool_use", "stop", etc.
 }
 
 type slashCommand struct {
 	name string
 	desc string
+}
+
+// actionCounters tracks tool call counts for Claude Code-style activity display.
+type actionCounters struct {
+	read    int
+	write   int
+	edit    int
+	list    int
+	find    int
+	search  int
+	exec    int
+	browse  int
+	created int
+}
+
+func (c actionCounters) total() int {
+	return c.read + c.write + c.edit + c.list + c.find + c.search + c.exec + c.browse + c.created
+}
+
+func (c actionCounters) String() string {
+	var parts []string
+	if c.read > 0 {
+		parts = append(parts, fmt.Sprintf("%d file dibaca", c.read))
+	}
+	if c.write > 0 {
+		parts = append(parts, fmt.Sprintf("%d file ditulis", c.write))
+	}
+	if c.edit > 0 {
+		parts = append(parts, fmt.Sprintf("%d file diedit", c.edit))
+	}
+	if c.list > 0 {
+		parts = append(parts, fmt.Sprintf("%d direktori", c.list))
+	}
+	if c.find > 0 {
+		parts = append(parts, fmt.Sprintf("%d pencarian file", c.find))
+	}
+	if c.search > 0 {
+		parts = append(parts, fmt.Sprintf("%d pencarian teks", c.search))
+	}
+	if c.exec > 0 {
+		parts = append(parts, fmt.Sprintf("%d perintah", c.exec))
+	}
+	if c.browse > 0 {
+		parts = append(parts, fmt.Sprintf("%d URL", c.browse))
+	}
+	if c.created > 0 {
+		parts = append(parts, fmt.Sprintf("%d direktori dibuat", c.created))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
 }
 
 // reActTool represents a parsed tool call from LLM text output.
@@ -290,15 +349,22 @@ type model struct {
 	tickCount    int  // animation counter for status dots
 	retryCount   int  // hitungan retry untuk error LLM
 
+	// Streaming activity display (Claude Code-style)
+	actionCounts    actionCounters
+	activityContent string // base content without spinner, managed by streaming handler
+
 	// Task list (plan panel)
 	taskList    []taskItem // daftar task dari plan checklist
 	taskUpdated bool       // true jika taskList berubah
 
 	// Streaming state
-	streamingContent string        // accumulated text from stream chunks
-	earlyTool        earlyToolExec // tool yang sudah dieksekusi saat streaming
-	streamStartTime  time.Time     // when the current stream started
-	lastStreamRender time.Time     // when the stream was last rendered to UI
+	streamingContent  string        // accumulated text from stream chunks
+	earlyTools        []earlyToolExec // tools yang sudah dieksekusi saat streaming (multiple)
+		earlyToolKeys     map[string]bool // dedup key → sudah dieksekusi early
+	streamStartTime   time.Time     // when the current stream started
+	lastStreamRender  time.Time     // when the stream was last rendered to UI
+	lastFinishReason  string        // API stop reason from the last chunk
+	shownToolKeys     map[string]bool // tool calls already shown during this stream (key = name+input)
 
 	mdRenderer *glamour.TermRenderer
 	mdWidth    int
@@ -309,6 +375,7 @@ type model struct {
 	settingsCurrentField settingsField // field yang sedang dipilih di settings
 	settingsEditMode     bool          // true saat sedang mengedit nilai field
 	settingsEditBuffer   string        // buffer untuk input nilai baru
+	settingsSelectAll    bool          // true saat seluruh buffer terseleksi (Cmd+A)
 	settingsProfileSel   int           // index yang dipilih di daftar profil
 	settingsShowProfileList bool      // true saat menampilkan daftar profil
 

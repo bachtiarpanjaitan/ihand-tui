@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -116,7 +117,9 @@ func (m *model) renderFull() string {
 	} else if m.state == stateConfirming {
 		bottom = renderConfirmPrompt(m)
 	} else if m.state == stateThinking {
-		bottom = renderThinkingIndicator(m)
+		// Thinking indicator is now shown in the viewport via streaming message.
+		// Bottom area just shows the textarea (blurred).
+		bottom = m.textarea.View()
 	} else if m.state == stateTrustPrompt {
 		bottom = renderTrustPrompt(m)
 	} else if m.state == stateSettings {
@@ -188,17 +191,82 @@ func renderEffortSelector(m *model) string {
 }
 
 func renderConfirmPrompt(m *model) string {
-	options := []string{"Allow", "Deny"}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Izinkan tool %s?\n\n", toolStyle().Render(m.pendingTool.name)))
+
+	// Header
+	b.WriteString(titleStyle().Render(" Konfirmasi Tindakan Keamanan"))
+	b.WriteString("\n\n")
+
+	// Detail tindakan
+	switch m.pendingTool.name {
+	case "write_file":
+		var p struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("76")).Bold(true).Render("Menulis file"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
+		))
+
+	case "edit_file":
+		var p struct {
+			Path    string `json:"path"`
+			Search  string `json:"search"`
+			Replace string `json:"replace"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("Mengedit file"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Underline(true).Render(p.Path),
+		))
+
+		// Tampilkan bagian search & replace
+		b.WriteString("  " + treeDiffDelStyle.Render("- Cari:") + "\n")
+		searchLines := strings.Split(p.Search, "\n")
+		for _, line := range searchLines {
+			b.WriteString("    " + treeConnectorStyle.Render("│ ") + treeDiffDelStyle.Render(line) + "\n")
+		}
+
+		b.WriteString("  " + treeDiffAddStyle.Render("+ Ganti:") + "\n")
+		replaceLines := strings.Split(p.Replace, "\n")
+		for _, line := range replaceLines {
+			b.WriteString("    " + treeConnectorStyle.Render("│ ") + treeDiffAddStyle.Render(line) + "\n")
+		}
+
+	case "exec":
+		var p struct {
+			Command string `json:"command"`
+		}
+		_ = json.Unmarshal([]byte(m.pendingTool.input), &p)
+
+		b.WriteString(fmt.Sprintf("  Tindakan: %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("Menjalankan Perintah"),
+		))
+		b.WriteString(fmt.Sprintf("  $ %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true).Render(p.Command),
+		))
+
+	default:
+		// Fallback
+		b.WriteString(fmt.Sprintf("  Tindakan: Menjalankan tool %s\n", toolStyle().Render(m.pendingTool.name)))
+		b.WriteString(fmt.Sprintf("  Input: %s\n", m.pendingTool.input))
+	}
+
+	b.WriteString("\n  Apakah Anda mengizinkan tindakan ini?\n\n")
+
+	options := []string{"Izinkan", "Tolak"}
 	for i, opt := range options {
 		if i == m.confirmChoice {
-			b.WriteString(fmt.Sprintf("  ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
+			b.WriteString(fmt.Sprintf("    ▸ %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255")).Render(opt)))
 		} else {
-			b.WriteString(fmt.Sprintf("    %s\n", dimStyle.Render(opt)))
+			b.WriteString(fmt.Sprintf("      %s\n", dimStyle.Render(opt)))
 		}
 	}
-	b.WriteString(dimStyle.Render("\n ↑↓ navigasi  •  Enter pilih  •  Y/N"))
+	b.WriteString(dimStyle.Render("\n  ↑↓ navigasi  •  Enter pilih  •  Y/N"))
 	return b.String()
 }
 
@@ -217,7 +285,7 @@ func renderThinkingIndicator(m *model) string {
 	}
 
 	if content == "" {
-		return fmt.Sprintf(" %s  Sedang berpikir...", spinner)
+		return fmt.Sprintf(" %s  Sedang Berpikir...", spinner)
 	}
 	// Hapus spinner prefix untuk display
 	for _, f := range spinnerFrames {
@@ -256,7 +324,7 @@ func renderTaskPanel(m *model) string {
 		return ""
 	}
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -277,21 +345,8 @@ func renderTaskPanel(m *model) string {
 		}
 	}
 
-	// Show max 5 items, prioritizing incomplete
-	const maxVisible = 5
-	var visible []taskItem
-	visible = append(visible, incomplete...)
-	if len(visible) < maxVisible {
-		remaining := maxVisible - len(visible)
-		if len(completed) > remaining {
-			completed = completed[:remaining]
-		}
-		visible = append(visible, completed...)
-	}
-	if len(visible) > maxVisible {
-		visible = visible[:maxVisible]
-	}
-	totalHidden := len(m.taskList) - len(visible)
+	// Show all tasks (no limit)
+	visible := append(incomplete, completed...)
 
 	for _, task := range visible {
 		var icon string
@@ -316,9 +371,6 @@ func renderTaskPanel(m *model) string {
 		}
 
 		desc := task.desc
-		if len(desc) > 50 {
-			desc = desc[:50] + "..."
-		}
 
 		line := fmt.Sprintf("\u2502 %s%s", iconStyle.Render(icon), desc)
 		b.WriteString(dimStyle.Render(line))
@@ -326,9 +378,10 @@ func renderTaskPanel(m *model) string {
 	}
 
 	// "+N more" jika ada task tersembunyi
-	if totalHidden > 0 {
+	if len(visible) < len(m.taskList) {
+		hidden := len(m.taskList) - len(visible)
 		moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-		line := fmt.Sprintf("\u2502 %s+%d lainnya", strings.Repeat(" ", 3), totalHidden)
+		line := fmt.Sprintf("\u2502 %s+%d lainnya", strings.Repeat(" ", 3), hidden)
 		b.WriteString(moreStyle.Render(line))
 		b.WriteString("\n")
 	}
@@ -354,7 +407,7 @@ func renderSettings(m *model) string {
 		return renderProfileList(m)
 	}
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -365,7 +418,7 @@ func renderSettings(m *model) string {
 	title := lipgloss.NewStyle().
 		Foreground(promptColor).
 		Bold(true).
-		Render("⚙ Pengaturan")
+		Render("  ⚙ Pengaturan")
 	b.WriteString(title)
 	b.WriteString("\n")
 
@@ -384,7 +437,8 @@ func renderSettings(m *model) string {
 	activeCfg := cfg.ActiveConfig()
 	fields := []fieldDef{
 		{label: "Profile", value: profileName},
-		{label: "Provider", value: activeCfg.Provider},
+		{label: "Nama Profil", value: profileName},
+		{label: "Skema", value: activeCfg.Schema},
 		{label: "Model", value: activeCfg.Model},
 		{label: "API Key", value: maskAPIKey(activeCfg.APIKey)},
 		{label: "Base URL", value: activeCfg.BaseURL},
@@ -399,10 +453,11 @@ func renderSettings(m *model) string {
 			maxLabelW = len(f.label)
 		}
 	}
+	// Extra padding so label doesn't wrap
+	maxLabelW += 5
 
-	sepLine := separatorStyle.Render(strings.Repeat("─", boxW))
-
-	b.WriteString(sepLine)
+	// Top border
+	b.WriteString(dimStyle.Render("\u250c" + strings.Repeat("\u2500", boxW-2) + "\u2510"))
 	b.WriteString("\n")
 
 	for i, f := range fields {
@@ -413,6 +468,7 @@ func renderSettings(m *model) string {
 			labelStyle := lipgloss.NewStyle().
 				Width(maxLabelW).
 				Align(lipgloss.Left).
+				PaddingRight(3).
 				Foreground(lipgloss.Color("255")).
 				Bold(true)
 			indicator := " ▸ "
@@ -421,15 +477,15 @@ func renderSettings(m *model) string {
 			var displayVal string
 			if m.settingsEditMode {
 				// Editing: show the buffer with cursor
-				if i == int(settingsAPIKey) {
-					// For API key, show masked value when not editing, raw when editing
-					displayVal = m.settingsEditBuffer + "█"
-					// But only show the input unmasked while actively typing
-				} else {
-					displayVal = m.settingsEditBuffer + "█"
+				cursor := "█"
+				bgColor := lipgloss.Color("240") // normal edit
+				if m.settingsSelectAll {
+					cursor = ""                    // hide cursor when all selected
+					bgColor = lipgloss.Color("25") // selection blue
 				}
+				displayVal = m.settingsEditBuffer + cursor
 				valStyle := lipgloss.NewStyle().
-					Background(lipgloss.Color("240")).
+					Background(bgColor).
 					Foreground(lipgloss.Color("255")).
 					Padding(0, 1)
 				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(displayVal)))
@@ -438,47 +494,56 @@ func renderSettings(m *model) string {
 				valStyle := lipgloss.NewStyle().
 					Foreground(lipgloss.Color("255")).
 					Padding(0, 1)
-				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, valStyle.Render(f.value)))
+				displayVal := valStyle.Render(f.value)
+				// Profile field: append switch hint
+				if i == int(settingsProfile) {
+					hintStyle := lipgloss.NewStyle().
+						Foreground(lipgloss.Color("243"))
+					displayVal += "  " + hintStyle.Render("▶ enter untuk pilih profil")
+				}
+				b.WriteString(fmt.Sprintf("%s%s %s\n", indicator, label, displayVal))
 			}
 		} else {
 			// Non-current field: dimmed
 			labelStyle := lipgloss.NewStyle().
 				Width(maxLabelW).
 				Align(lipgloss.Left).
+				PaddingRight(3).
 				Foreground(dimColor)
 			label := labelStyle.Render(f.label + ":")
 			valStyle := lipgloss.NewStyle().
 				Foreground(lipgloss.Color("252")).
 				Padding(0, 1)
-			b.WriteString(fmt.Sprintf("   %s %s\n", label, valStyle.Render(f.value)))
+			displayVal := valStyle.Render(f.value)
+			// Profile field: append switch hint (dimmed version)
+			if i == int(settingsProfile) {
+				hintStyle := lipgloss.NewStyle().
+					Foreground(dimColor)
+				displayVal += "  " + hintStyle.Render("▶ enter untuk pilih profil")
+			}
+			b.WriteString(fmt.Sprintf("   %s %s\n", label, displayVal))
 		}
 	}
 
-	b.WriteString(sepLine)
+	b.WriteString(dimStyle.Render("\u2514" + strings.Repeat("\u2500", boxW-2) + "\u2518"))
 	b.WriteString("\n")
 
 	// Controls hint
 	controls := dimStyle.Render(
-		"↑↓ navigasi  |  Enter edit (Profile: lihat daftar)  |  Esc batal  |  Ctrl+S simpan & keluar",
+		"↑↓ navigasi  |  Enter: Profile → pilih/switch, lainnya → edit  |  Esc batal  |  Ctrl+S simpan",
 	)
 	b.WriteString(controls)
 	b.WriteString("\n")
 
-	return lipgloss.NewStyle().
-		Width(boxW).
-		Padding(0, 2).
-		Render(b.String())
+	return b.String()
 }
 
 // maskAPIKey masks an API key for display, showing only the last 4 characters.
 // renderProfileList renders the profile selection sub-view.
 func renderProfileList(m *model) string {
 	profiles := m.settingsConfig.Profiles
-	if len(profiles) == 0 {
-		return "Tidak ada profil."
-	}
 
-	boxW := m.width - 4
+	boxW := m.width - 1
 	if boxW < 40 {
 		boxW = 40
 	}
@@ -491,6 +556,8 @@ func renderProfileList(m *model) string {
 		Render("Pilih Profil LLM")
 	b.WriteString(title)
 	b.WriteString("\n\n")
+
+	addNewIdx := len(profiles)
 
 	for i, p := range profiles {
 		isSelected := i == m.settingsProfileSel
@@ -516,19 +583,29 @@ func renderProfileList(m *model) string {
 			activeMark = dimStyle.Render("   ")
 		}
 
-		detailStr := fmt.Sprintf("%s/%s", p.Provider, p.Model)
+		detailStr := fmt.Sprintf("%s/%s", p.Schema, p.Model)
 		detail := dimStyle.Render(detailStr)
 
 		line := fmt.Sprintf("%s %s%s  %s\n", prefix, nameStyle.Render(p.Name), activeMark, detail)
 		b.WriteString(line)
 	}
 
+	// Add New Profile option
+	atEnd := m.settingsProfileSel == addNewIdx
+	addPrefix := "  "
+	if atEnd {
+		addPrefix = " ▸"
+	}
+	addStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("39"))
+	if atEnd {
+		addStyle = addStyle.Bold(true)
+	}
+	b.WriteString(fmt.Sprintf("%s %s\n", addPrefix, addStyle.Render("+ Add New Profile")))
+
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih & switch  •  Esc batal"))
-	return lipgloss.NewStyle().
-		Width(boxW).
-		Padding(0, 2).
-		Render(b.String())
+	b.WriteString(dimStyle.Render(" \u2191\u2193 navigasi  •  Enter pilih/switch  •  + Add New Profile  •  Esc batal"))
+	return b.String()
 }
 
 func maskAPIKey(key string) string {

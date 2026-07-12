@@ -90,3 +90,42 @@ func toolActivityStyle() lipgloss.Style {
 		Foreground(lipgloss.Color("252")).
 		Padding(0, 1)
 }
+
+// ---------------------------------------------------------------------------
+// Tree-view styles (Claude Code-style tool display)
+// ---------------------------------------------------------------------------
+
+var (
+	// Tree connector characters: ├── └── │
+	treeConnectorStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245"))
+
+	// Tool name in tree header
+	treeToolNameStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("39")).
+		Bold(true)
+
+	// Status indicators
+	treeSuccessStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("76"))
+
+	treeErrorStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")).
+		Bold(true)
+
+	// Diff coloring
+	treeDiffAddStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("76"))
+
+	treeDiffDelStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196"))
+
+	// Content lines under tree node
+	treeContentStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245"))
+
+	// Meta info (bytes, lines, etc.)
+	treeMetaStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("243"))
+)
+
