@@ -8,7 +8,7 @@ require (
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/atotto/clipboard v0.1.4
-	github.com/bachtiarpanjaitan/ihandai-go v1.0.3
+	github.com/bachtiarpanjaitan/ihandai-go v1.0.4
 )
 
 require (

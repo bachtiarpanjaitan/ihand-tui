@@ -16,6 +16,12 @@ func (m *model) buildConversation() string {
 		return m.welcomeString()
 	}
 
+	// Hitung lebar konten sekali untuk caching markdown
+	contentWidth := m.width - 6
+	if contentWidth < 40 {
+		contentWidth = 40
+	}
+
 	var b strings.Builder
 
 	for i, msg := range m.messages {
@@ -36,9 +42,13 @@ func (m *model) buildConversation() string {
 					b.WriteString(header)
 					b.WriteString("\n")
 				}
-				// Render markdown untuk final answer
-				rendered := m.renderMarkdown(msg.content)
-				b.WriteString(rendered)
+				// Render markdown untuk final answer — cache by (content, width).
+				// Menghindari re-render glamour per buildConversation pada conversation panjang.
+				if msg.renderedWidth != contentWidth || msg.renderedContent == "" {
+					msg.renderedContent = m.renderMarkdown(msg.content)
+					msg.renderedWidth = contentWidth
+				}
+				b.WriteString(msg.renderedContent)
 				b.WriteString("\n")
 			} else {
 				// Streaming content — plain text (belum final)

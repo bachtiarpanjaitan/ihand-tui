@@ -177,6 +177,11 @@ type chatMessage struct {
 	tokens    int
 	timing    time.Duration
 	streaming bool // true jika pesan masih dalam proses streaming
+
+	// Markdown render cache — invalidated when content or width changes.
+	// Avoids re-running glamour on every buildConversation() call.
+	renderedContent string // hasil renderMarkdown, di-cache per (content, width)
+	renderedWidth   int    // width terminal saat renderedContent di-generate
 }
 
 // taskItem represents one item in the plan/task checklist.
